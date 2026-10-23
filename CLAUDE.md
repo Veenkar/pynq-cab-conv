@@ -2,7 +2,8 @@
 
 Guitar cabinet IR convolver for the **PYNQ-Z2** (Zynq-7020 + ADAU1761 codec).
 Amp signal (via attenuator/load box) → LINE IN → time-domain FIR in PL → headphone out.
-README.md (Polish) is the user-facing doc; this file is for working on the code.
+README.md (English) is the user-facing doc, README_PL.md its Polish translation; keep both in sync.
+This file is for working on the code.
 
 ## Communication
 - Code, comments and commit messages in English. Use SI units.
@@ -40,7 +41,7 @@ vivado/build.tcl     project + block design + bitstream, copies .bit/.hwh to bui
 vivado/ps7_pynq_z2.tcl  full PS7 config (DDR/MIO) from PYNQ v2.7 base overlay (BSD-3) – no board files needed
 vivado/pynq_z2_audio.xdc codec pins
 sw/cab_conv.py       PYNQ driver: overlay, codec over /dev/i2c-*, IR prep/quantize, bit-exact model
-sw/example.py        usage example (Polish comments)
+sw/example.py        usage example
 sw/board/            helper scripts used on the board in ~xilinx/cab_conv/ (run with sudo -i):
                      load_cab.py (overlay + IR), load_ir.py (IR only), meter.py (live levels), ctl.py (mute/HP vol)
 ```
@@ -76,8 +77,8 @@ Sim needs `iverilog`, `numpy`, `scipy`. Compile flags used: `-g2005 -DSIMULATION
 - Power-on state: bank 0 = unity (h[0]=65536, shift0=16) → audio passes through before any IR is loaded.
 
 ## Register map
-Documented at the top of `rtl/cab_conv_top.v` and in README.md. Coefs at `0x8000 + 4*i`, write-only.
-If you change the map, update RTL header, README table, `sw/cab_conv.py` constants and the testbench together.
+Documented at the top of `rtl/cab_conv_top.v` and in README.md / README_PL.md. Coefs at `0x8000 + 4*i`, write-only.
+If you change the map, update RTL header, both README tables, `sw/cab_conv.py` constants and the testbench together.
 
 ## Board / codec facts (verified against PYNQ v2.7 sources)
 - Pins: MCLK U5, BCLK R18, LRCLK T17, SDATA to codec G18 (`sdata_o`), from codec F17 (`sdata_i`),
@@ -93,6 +94,6 @@ If you change the map, update RTL header, README table, `sw/cab_conv.py` constan
 - Python driver must stay importable without `pynq` for the model/quantize helpers (sim uses them).
 
 ## Ideas / next steps
-- First Vivado build, fix TCL, check timing (`build/timing.rpt`), utilisation (~4 DSP, ~16 RAMB36 expected).
-- Hardware bring-up: passthrough first (bypass), then IR.
-- Possible features: NLANE=8 (16384 taps), second engine for a stereo / dual-mic IR, Jupyter notebook UI.
+- Possible features: NLANE=8 (16384 taps; needs a register map change, the coef window at 0x8000
+  only holds 8192 words in 64 KiB), second engine for a stereo / dual-mic IR, Jupyter notebook UI,
+  longer reverb IRs (~40 lanes fit in BRAM, needs a pipelined lane-sum tree).
