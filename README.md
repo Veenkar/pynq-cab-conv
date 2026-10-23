@@ -171,3 +171,9 @@ Sygnał z gitary/wzmacniacza nie ma takich wymagań: wchodzi analogowo na LINE I
   `fir_engine` z osobnymi współczynnikami na prawy kanał.
 - **Wyższe fs:** 96 kHz wymaga zegara 245,76 MHz albo dwa razy więcej torów
   przy tej samej długości IR w milisekundach.
+
+## Licencja
+
+GPL-3.0, pełny tekst w `LICENSE`. Wyjątek: `vivado/ps7_pynq_z2.tcl` pochodzi
+z PYNQ v2.7.0 (Copyright (c) 2018, Xilinx) i jest na licencji BSD-3-Clause,
+tekst w `vivado/LICENSE.PYNQ`.

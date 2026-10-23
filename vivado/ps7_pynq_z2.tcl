@@ -1,6 +1,7 @@
 # PS7 configuration for the TUL PYNQ-Z2 (DDR3, MIO, clocks).
 # Taken from the PYNQ v2.7.0 base overlay (boards/Pynq-Z2/base/base.tcl),
-# Copyright (C) Xilinx, Inc., BSD-3-Clause. Lets the project build without
+# Copyright (c) 2018, Xilinx, BSD-3-Clause (full text in vivado/LICENSE.PYNQ);
+# not covered by the project's GPL. Lets the project build without
 # installing PYNQ-Z2 board files.
 
 proc apply_pynq_z2_ps7_config {ps} {
