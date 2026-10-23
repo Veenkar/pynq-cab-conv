@@ -1,0 +1,14 @@
+# systemd unit: start the cab convolver at boot.
+# Install: sudo cp cab-conv.service /etc/systemd/system/ && sudo systemctl enable cab-conv
+# The login shell (bash -l) sources /etc/profile.d (XRT + PYNQ venv), like sudo -i.
+[Unit]
+Description=Guitar cab IR convolver (cab_conv overlay + IR)
+After=bootpy.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -lc "python3 /home/xilinx/cab_conv/autostart.py /home/xilinx/cab_conv/cab.wav --gain-db 3 --hp-db 0"
+
+[Install]
+WantedBy=multi-user.target

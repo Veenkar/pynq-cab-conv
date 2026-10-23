@@ -128,6 +128,15 @@ sudo -i python3 ~xilinx/cab_conv/meter.py          # mierniki na żywo, Ctrl+C k
 sudo -i python3 ~xilinx/cab_conv/ctl.py hp -6      # głośność słuchawek / fpga_mute 0|1
 ```
 
+Żeby konwolwer startował sam po włączeniu płytki, zainstaluj usługę systemd
+z `sw/board/` (uruchamia `autostart.py` po PYNQ-owym `bootpy.service`, który
+najpierw ładuje `base.bit`; IR i poziomy zmienia się w `ExecStart`):
+
+```
+sudo cp ~xilinx/cab_conv/cab-conv.service /etc/systemd/system/
+sudo systemctl enable --now cab-conv.service
+```
+
 Uwaga: `CabConv(...)` domyślnie wgrywa bitstream, co kasuje załadowaną IR.
 Żeby podłączyć się do działającego overlayu, użyj `download=False`. Przycisk
 PROG i odłączenie zasilania też czyszczą FPGA. Start `pynq` na płytce trwa

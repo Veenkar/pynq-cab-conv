@@ -126,6 +126,15 @@ sudo -i python3 ~xilinx/cab_conv/meter.py          # live meters, Ctrl+C to stop
 sudo -i python3 ~xilinx/cab_conv/ctl.py hp -6      # headphone volume / fpga_mute 0|1
 ```
 
+To start the convolver automatically at boot, install the systemd unit from
+`sw/board/` (it runs `autostart.py` after PYNQ's own `bootpy.service`, which
+loads `base.bit` first; edit `ExecStart` to change the IR or levels):
+
+```
+sudo cp ~xilinx/cab_conv/cab-conv.service /etc/systemd/system/
+sudo systemctl enable --now cab-conv.service
+```
+
 Note: `CabConv(...)` loads the bitstream by default, which clears the loaded
 IR. To attach to an overlay that is already running, use `download=False`. The
 PROG button and a power cycle also clear the FPGA. Starting `pynq` takes about

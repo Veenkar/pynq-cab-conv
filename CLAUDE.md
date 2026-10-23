@@ -43,7 +43,8 @@ vivado/pynq_z2_audio.xdc codec pins
 sw/cab_conv.py       PYNQ driver: overlay, codec over /dev/i2c-*, IR prep/quantize, bit-exact model
 sw/example.py        usage example
 sw/board/            helper scripts used on the board in ~xilinx/cab_conv/ (run with sudo -i):
-                     load_cab.py (overlay + IR), load_ir.py (IR only), meter.py (live levels), ctl.py (mute/HP vol)
+                     load_cab.py (overlay + IR), load_ir.py (IR only), meter.py (live levels), ctl.py (mute/HP vol),
+                     autostart.py + cab-conv.service (boot start, After=bootpy.service which loads base.bit)
 ```
 
 ## Commands
