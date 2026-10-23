@@ -3,7 +3,8 @@
 # The login shell (bash -l) sources /etc/profile.d (XRT + PYNQ venv), like sudo -i.
 [Unit]
 Description=Guitar cab IR convolver (cab_conv overlay + IR)
-After=bootpy.service
+# bootpy.service may load base.bit; clear_pl_statefile.service runs PL.reset()
+After=bootpy.service clear_pl_statefile.service
 
 [Service]
 Type=oneshot
