@@ -1,0 +1,16 @@
+# Vivado build outputs and logs
+build/
+.Xil/
+*.jou
+*.log
+*.pb
+NA
+
+# simulation outputs
+sim/work*/
+
+# Python
+__pycache__/
+
+# audio: IRs (licensing), recordings and test signals stay out of the repo
+*.wav

@@ -1,0 +1,255 @@
+// tb_cab_conv.v
+// Testbench: AXI4-Lite master BFM + ADAU1761 I2S slave model.
+// Driven by sim/run_sim.py, which generates stimulus files and checks the
+// captured output bit-exactly against the Python model.
+//
+// Sequence (frame counts from plusargs):
+//   reset -> F0 frames with power-on IR (bank 0 = unity)
+//   load IR A into bank 1, switch            -> F1 frames
+//   load IR B into bank 0, switch mid-stream -> F2 frames
+//   bypass on                                -> F3 frames
+//   mute on                                  -> until input runs out
+
+`timescale 1ns / 1ps
+
+module tb_cab_conv;
+
+`ifndef NLANE
+`define NLANE 4
+`endif
+`ifndef LW
+`define LW 6
+`endif
+`ifndef HALF
+`define HALF 10
+`endif
+
+    localparam NLANE = `NLANE;
+    localparam LW    = `LW;
+    localparam HALF  = `HALF;
+    localparam NTAPS = NLANE << LW;
+    localparam MAXN  = 65536;
+
+    reg aclk = 0;
+    always #4.069 aclk = ~aclk;           // ~122.88 MHz
+    reg aresetn = 0;
+
+    // AXI
+    reg  [15:0] awaddr = 0;  reg awvalid = 0; wire awready;
+    reg  [31:0] wdata = 0;   reg wvalid = 0;  wire wready;
+    wire [1:0]  bresp;       wire bvalid;     reg bready = 0;
+    reg  [15:0] araddr = 0;  reg arvalid = 0; wire arready;
+    wire [31:0] rdata;       wire [1:0] rresp; wire rvalid; reg rready = 0;
+
+    wire mclk, bclk, lrclk, sdata_o;
+    reg  sdata_i = 0;
+    wire [1:0] codec_addr;
+
+    cab_conv_top #(.NLANE(NLANE), .LW(LW), .HALF(HALF)) dut (
+        .aclk(aclk), .aresetn(aresetn),
+        .s_axi_awaddr(awaddr), .s_axi_awprot(3'b000), .s_axi_awvalid(awvalid),
+        .s_axi_awready(awready),
+        .s_axi_wdata(wdata), .s_axi_wstrb(4'hF), .s_axi_wvalid(wvalid),
+        .s_axi_wready(wready),
+        .s_axi_bresp(bresp), .s_axi_bvalid(bvalid), .s_axi_bready(bready),
+        .s_axi_araddr(araddr), .s_axi_arprot(3'b000), .s_axi_arvalid(arvalid),
+        .s_axi_arready(arready),
+        .s_axi_rdata(rdata), .s_axi_rresp(rresp), .s_axi_rvalid(rvalid),
+        .s_axi_rready(rready),
+        .mclk(mclk), .bclk(bclk), .lrclk(lrclk), .sdata_o(sdata_o),
+        .sdata_i(sdata_i), .codec_addr(codec_addr)
+    );
+
+    // ------------------------------------------------------------------
+    // AXI BFM
+    // ------------------------------------------------------------------
+    task axi_write(input [15:0] a, input [31:0] d);
+        begin
+            @(posedge aclk);
+            awaddr <= a; wdata <= d; awvalid <= 1; wvalid <= 1;
+            @(posedge aclk);
+            while (!(awready && wready)) @(posedge aclk);
+            awvalid <= 0; wvalid <= 0; bready <= 1;
+            while (!bvalid) @(posedge aclk);
+            @(posedge aclk);
+            bready <= 0;
+        end
+    endtask
+
+    task axi_read(input [15:0] a, output [31:0] d);
+        begin
+            @(posedge aclk);
+            araddr <= a; arvalid <= 1;
+            @(posedge aclk);
+            while (!arready) @(posedge aclk);
+            arvalid <= 0; rready <= 1;
+            while (!rvalid) @(posedge aclk);
+            d = rdata;
+            @(posedge aclk);
+            rready <= 0;
+        end
+    endtask
+
+    // ------------------------------------------------------------------
+    // Stimulus files
+    // ------------------------------------------------------------------
+    reg [23:0] inl [0:MAXN-1];
+    reg [23:0] inr [0:MAXN-1];
+    reg [17:0] coefa [0:NTAPS-1];
+    reg [17:0] coefb [0:NTAPS-1];
+    integer nin, sha, shb, f0, f1, f2, f3;
+    integer fout;
+
+    // ------------------------------------------------------------------
+    // ADAU1761 model (I2S slave): drives ADC data after BCLK falling,
+    // samples DAC data on BCLK rising.
+    // ------------------------------------------------------------------
+    integer slot = 0;
+    reg     lr_prev = 0;
+    integer fidx = 0;           // index of the frame being sent
+    reg [23:0] cur_l = 0, cur_r = 0;
+    reg [23:0] cap_l = 0, cap_r = 0;
+    integer frames_out = 0;
+    reg     started = 0;
+
+    always @(negedge bclk) begin
+        #2;
+        if (lrclk !== lr_prev) begin
+            slot = 0;
+            lr_prev = lrclk;
+            if (lrclk == 1'b0) begin
+                // new frame: next ADC sample
+                if (fidx < nin) begin
+                    cur_l = inl[fidx];
+                    cur_r = inr[fidx];
+                end else begin
+                    cur_l = 0; cur_r = 0;
+                end
+                fidx = fidx + 1;
+                started = 1;
+            end
+        end else begin
+            slot = slot + 1;
+        end
+        #8;                      // codec tCO
+        if (slot >= 1 && slot <= 24)
+            sdata_i = lrclk ? cur_r[24 - slot] : cur_l[24 - slot];
+        else
+            sdata_i = 1'b0;
+    end
+
+    always @(posedge bclk) begin
+        #2;
+        if (started && slot >= 1 && slot <= 24) begin
+            if (lrclk == 1'b0) cap_l = {cap_l[22:0], sdata_o};
+            else               cap_r = {cap_r[22:0], sdata_o};
+            if (lrclk == 1'b1 && slot == 24) begin
+                $fdisplay(fout, "%0d %0d", $signed(cap_l), $signed(cap_r));
+                frames_out = frames_out + 1;
+            end
+        end
+    end
+
+    // MCLK must be exactly aclk/10
+    integer mclk_edges = 0;
+    always @(posedge mclk) mclk_edges = mclk_edges + 1;
+
+    // ------------------------------------------------------------------
+    // Test sequence
+    // ------------------------------------------------------------------
+    reg [31:0] r;
+    integer i, t_start;
+
+    task wait_frames(input integer n);
+        integer target;
+        begin
+            target = fidx + n;
+            while (fidx < target) @(posedge aclk);
+        end
+    endtask
+
+    task wait_bank(input integer b);
+        begin
+            axi_read(16'h000C, r);
+            while (r[0] !== b[0]) axi_read(16'h000C, r);
+        end
+    endtask
+
+    initial begin
+        if (!$value$plusargs("NIN=%d", nin)) nin = 1000;
+        if (!$value$plusargs("SHA=%d", sha)) sha = 16;
+        if (!$value$plusargs("SHB=%d", shb)) shb = 16;
+        if (!$value$plusargs("F0=%d", f0)) f0 = 100;
+        if (!$value$plusargs("F1=%d", f1)) f1 = 100;
+        if (!$value$plusargs("F2=%d", f2)) f2 = 100;
+        if (!$value$plusargs("F3=%d", f3)) f3 = 100;
+        $readmemh("inl.hex", inl);
+        $readmemh("inr.hex", inr);
+        $readmemh("coefa.hex", coefa);
+        $readmemh("coefb.hex", coefb);
+        fout = $fopen("out.txt", "w");
+
+        repeat (20) @(posedge aclk);
+        aresetn = 1;
+
+        axi_read(16'h0000, r);
+        $display("ID      = %08x", r);
+        if (r !== 32'h43414256) begin $display("FAIL: bad ID"); $finish; end
+        axi_read(16'h0004, r);
+        $display("PARAMS  = %08x (taps=%0d)", r, r[15:0]);
+        if (r[15:0] !== NTAPS) begin $display("FAIL: bad PARAMS"); $finish; end
+
+        wait_frames(f0);
+
+        // ---- IR A -> bank 1 ----
+        $display("[%0d] loading IR A into bank 1", fidx);
+        for (i = 0; i < NTAPS; i = i + 1)
+            axi_write(16'h8000 + 4*i, {14'd0, coefa[i]});
+        axi_write(16'h0014, sha);
+        axi_write(16'h0008, 32'h10);
+        wait_bank(1);
+        $display("[%0d] bank 1 active", fidx);
+        wait_frames(f1);
+
+        // ---- IR B -> bank 0 (written while bank 1 is playing) ----
+        $display("[%0d] loading IR B into bank 0", fidx);
+        for (i = 0; i < NTAPS; i = i + 1)
+            axi_write(16'h8000 + 4*i, {14'd0, coefb[i]});
+        axi_write(16'h0010, shb);
+        axi_write(16'h0008, 32'h00);
+        wait_bank(0);
+        $display("[%0d] bank 0 active", fidx);
+        wait_frames(f2);
+
+        axi_read(16'h000C, r);
+        $display("STATUS  = %08x (in_clip=%0d out_clip=%0d overrun=%0d)",
+                 r, r[1], r[2], r[3]);
+        axi_read(16'h0020, r);  $display("PEAK_IN = %06x", r);
+        axi_read(16'h0024, r);  $display("PEAK_OUT= %06x", r);
+        axi_read(16'h001C, r);  $display("SAMPLES = %0d", r);
+
+        // ---- bypass ----
+        $display("[%0d] bypass", fidx);
+        axi_write(16'h0008, 32'h01);
+        wait_frames(f3);
+
+        // ---- mute ----
+        $display("[%0d] mute", fidx);
+        axi_write(16'h0008, 32'h02);
+        axi_write(16'h0018, 32'h1);         // clear flags
+        axi_read(16'h000C, r);
+        if (r[2] !== 1'b0) $display("FAIL: clear did not work");
+        while (fidx < nin + 4) @(posedge aclk);
+
+        axi_read(16'h000C, r);
+        if (r[3]) $display("FAIL: engine overrun");
+        else      $display("no engine overrun");
+        $display("MCLK edges = %0d over %0d frames (%0d per frame)",
+                 mclk_edges, fidx, mclk_edges / fidx);
+        $display("frames captured = %0d", frames_out);
+        $fclose(fout);
+        $display("DONE");
+        $finish;
+    end
+
+endmodule
