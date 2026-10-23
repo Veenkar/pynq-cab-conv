@@ -128,14 +128,24 @@ sudo -i python3 ~xilinx/cab_conv/meter.py          # mierniki na żywo, Ctrl+C k
 sudo -i python3 ~xilinx/cab_conv/ctl.py hp -6      # głośność słuchawek / fpga_mute 0|1
 ```
 
-Żeby konwolwer startował sam po włączeniu płytki, zainstaluj usługę systemd
-z `sw/board/` (uruchamia `autostart.py` po PYNQ-owym `bootpy.service`, który
-najpierw ładuje `base.bit`; IR i poziomy zmienia się w `ExecStart`):
+Żeby konwolwer startował sam po włączeniu płytki, uruchom na płytce skrypt
+instalacyjny z `sw/board/`. Instaluje on `cab-conv.service`, która uruchamia
+`autostart.py` po PYNQ-owym `bootpy.service`; IR i poziomy zmienia się
+w `ExecStart` w `/etc/systemd/system/cab-conv.service`.
 
 ```
-sudo cp ~xilinx/cab_conv/cab-conv.service /etc/systemd/system/
-sudo systemctl enable --now cab-conv.service
+cd ~xilinx/cab_conv
+sudo ./install_autostart.sh            # sam autostart (IR gotowa ok. 160 s po włączeniu)
+sudo ./install_autostart.sh --fast     # + szybszy start (IR gotowa ok. 85 s)
+sudo ./install_autostart.sh --restore  # cofa wszystko, ustawienia PYNQ jak w obrazie
 ```
+
+`--fast` zmienia obraz PYNQ: `/boot/boot.py` nie ładuje już `base.bit` i nie
+miga diodami (oryginał zostaje jako `/boot/boot.py.orig`), a `jupyter.service`
+i `clear_pl_statefile.service` są wyłączone (ta druga ma
+`Requires=jupyter.service`). Jupyter na porcie 9090 znika, SSH zostaje.
+Start był wolny głównie dlatego, że naraz ruszały trzy procesy Pythona
+importujące `pynq` (ok. 10 s każdy na Cortex-A9 650 MHz), a nie przez kartę SD.
 
 Uwaga: `CabConv(...)` domyślnie wgrywa bitstream, co kasuje załadowaną IR.
 Żeby podłączyć się do działającego overlayu, użyj `download=False`. Przycisk

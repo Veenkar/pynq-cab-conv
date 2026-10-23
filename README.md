@@ -126,14 +126,24 @@ sudo -i python3 ~xilinx/cab_conv/meter.py          # live meters, Ctrl+C to stop
 sudo -i python3 ~xilinx/cab_conv/ctl.py hp -6      # headphone volume / fpga_mute 0|1
 ```
 
-To start the convolver automatically at boot, install the systemd unit from
-`sw/board/` (it runs `autostart.py` after PYNQ's own `bootpy.service`, which
-loads `base.bit` first; edit `ExecStart` to change the IR or levels):
+To start the convolver automatically at boot, run the install script from
+`sw/board/` on the board. It installs `cab-conv.service`, which runs
+`autostart.py` after PYNQ's own `bootpy.service`; edit `ExecStart` in
+`/etc/systemd/system/cab-conv.service` to change the IR or levels.
 
 ```
-sudo cp ~xilinx/cab_conv/cab-conv.service /etc/systemd/system/
-sudo systemctl enable --now cab-conv.service
+cd ~xilinx/cab_conv
+sudo ./install_autostart.sh            # autostart only (IR ready ~160 s after power-on)
+sudo ./install_autostart.sh --fast     # + faster boot (IR ready ~85 s)
+sudo ./install_autostart.sh --restore  # undo everything, back to PYNQ defaults
 ```
+
+`--fast` changes the PYNQ image: `/boot/boot.py` no longer loads `base.bit`
+and blinks the LEDs (original kept as `/boot/boot.py.orig`), and
+`jupyter.service` and `clear_pl_statefile.service` are disabled (the latter
+has `Requires=jupyter.service`). Jupyter at port 9090 is then gone; SSH stays.
+Boot was slow mainly because three Python processes importing `pynq` (~10 s
+each on the 650 MHz Cortex-A9) started at once, not because of the SD card.
 
 Note: `CabConv(...)` loads the bitstream by default, which clears the loaded
 IR. To attach to an overlay that is already running, use `download=False`. The
