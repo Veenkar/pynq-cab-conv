@@ -49,7 +49,9 @@ sw/board/            helper scripts used on the board in ~xilinx/cab_conv/ (run 
                      record.py + record.service (dry/wet WAV recorder, `install_autostart.sh --rec`),
                      autostart.py + cab-conv.service (boot start, After=bootpy.service which loads base.bit),
                      install_autostart.sh [--fast|--restore] (installs the unit; --fast trims /boot/boot.py and
-                     disables jupyter + clear_pl_statefile, which has Requires=jupyter)
+                     disables jupyter + clear_pl_statefile, which has Requires=jupyter),
+                     eth-disable.sh / eth-enable.sh (copied to ~xilinx; bootargs= in /boot/uEnv.txt with
+                     initcall_blacklist=macb_driver_init: macb is built in and its MDIO PHY scan stalls boot ~38 s)
 ```
 
 ## Commands

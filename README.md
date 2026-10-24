@@ -157,6 +157,19 @@ has `Requires=jupyter.service`). Jupyter at port 9090 is then gone; SSH stays.
 Boot was slow mainly because three Python processes importing `pynq` (~10 s
 each on the 650 MHz Cortex-A9) started at once, not because of the SD card.
 
+The other ~38 s go to the on-board Ethernet: the kernel's `macb` driver stalls
+in its MDIO PHY scan at boot. If you only use Wi-Fi, switch it off (kept
+across reboots, applies at the next boot):
+
+```
+sudo ./eth-disable.sh    # adds initcall_blacklist=macb_driver_init via /boot/uEnv.txt
+sudo ./eth-enable.sh     # undo
+```
+
+With `--fast` and Ethernet off, the IR is ready about 49 s after power-on
+(kernel 2.8 s instead of ~41 s). If the board ever fails to boot after
+this, delete `uEnv.txt` from the SD card's FAT partition on a PC.
+
 Note: `CabConv(...)` loads the bitstream by default, which clears the loaded
 IR. To attach to an overlay that is already running, use `download=False`. The
 PROG button and a power cycle also clear the FPGA. Starting `pynq` takes about

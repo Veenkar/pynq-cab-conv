@@ -158,6 +158,19 @@ i `clear_pl_statefile.service` są wyłączone (ta druga ma
 Start był wolny głównie dlatego, że naraz ruszały trzy procesy Pythona
 importujące `pynq` (ok. 10 s każdy na Cortex-A9 650 MHz), a nie przez kartę SD.
 
+Kolejne ~38 s zabiera wbudowany Ethernet: sterownik `macb` w jądrze zawiesza
+się przy starcie na skanowaniu PHY po MDIO. Jeśli używasz tylko Wi-Fi, można
+go wyłączyć (zostaje po restarcie, działa od następnego bootu):
+
+```
+sudo ./eth-disable.sh    # dodaje initcall_blacklist=macb_driver_init przez /boot/uEnv.txt
+sudo ./eth-enable.sh     # cofa zmianę
+```
+
+Z `--fast` i wyłączonym Ethernetem IR jest gotowa ok. 49 s po włączeniu
+(jądro 2,8 s zamiast ok. 41 s). Gdyby płytka po tym nie wstała, usuń
+`uEnv.txt` z partycji FAT karty SD na PC.
+
 Uwaga: `CabConv(...)` domyślnie wgrywa bitstream, co kasuje załadowaną IR.
 Żeby podłączyć się do działającego overlayu, użyj `download=False`. Przycisk
 PROG i odłączenie zasilania też czyszczą FPGA. Start `pynq` na płytce trwa
