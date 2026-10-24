@@ -4,6 +4,10 @@
 set_property -dict {PACKAGE_PIN U9 IOSTANDARD LVCMOS33 PULLUP true} [get_ports IIC_1_scl_io]
 set_property -dict {PACKAGE_PIN T9 IOSTANDARD LVCMOS33 PULLUP true} [get_ports IIC_1_sda_io]
 
+## Arduino header SCL / SDA (PS I2C0 via EMIO -> /dev/i2c-0), e.g. SSD1306 OLED
+set_property -dict {PACKAGE_PIN P15 IOSTANDARD LVCMOS33 PULLUP true} [get_ports IIC_0_scl_io]
+set_property -dict {PACKAGE_PIN P16 IOSTANDARD LVCMOS33 PULLUP true} [get_ports IIC_0_sda_io]
+
 ## I2S + MCLK
 set_property -dict {PACKAGE_PIN U5  IOSTANDARD LVCMOS33} [get_ports mclk]
 set_property -dict {PACKAGE_PIN R18 IOSTANDARD LVCMOS33} [get_ports bclk]

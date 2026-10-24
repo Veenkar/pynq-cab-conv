@@ -40,7 +40,7 @@ vivado/
 sw/
   cab_conv.py       driver: overlay, codec over I2C, IR loading, model
   example.py        usage example
-  board/            helper scripts for the board (load, meter, control, record)
+  board/            helper scripts for the board (load, meter, control, record, OLED status)
 ```
 
 ## How it works
@@ -153,6 +153,7 @@ cd ~xilinx/cab_conv
 sudo ./install_autostart.sh            # autostart only (IR ready ~160 s after power-on)
 sudo ./install_autostart.sh --fast     # + faster boot (IR ready ~85 s)
 sudo ./install_autostart.sh --rec      # + record.service (BTN0 recorder); combine: --fast --rec
+sudo ./install_autostart.sh --oled     # + status.service (OLED display, see Status display)
 sudo ./install_autostart.sh --restore  # undo everything, back to PYNQ defaults
 ```
 
@@ -281,6 +282,51 @@ the headers are patched every 2 s, so a power cut loses
 at most the last couple of seconds. For a permanent setup, `install_autostart.sh
 --rec` installs `record.service` (after `cab-conv.service`), and then BTN0 starts
 and stops a take at any time. Each 24-bit mono file grows by about 8.6 MB per minute.
+
+## Status display (OLED)
+
+An optional 0.91" SSD1306 OLED module (128×32, I2C address 0x3C) shows the
+state of the convolver. It sits on PS I2C0, which the bitstream routes to the
+Arduino header SCL/SDA pins (FPGA pins P15 / P16), so it is `/dev/i2c-0` on
+the board (the codec uses `/dev/i2c-1`). Four female-female jumper wires:
+
+| OLED | PYNQ-Z2 (Arduino header) |
+|------|--------------------------|
+| GND | GND |
+| VCC | 3.3V or 5V (power header), see below |
+| SCL | SCL (P15) |
+| SDA | SDA (P16) |
+
+VCC: 3.3V always works and is the recommended choice; on the tested module 5V
+was not noticeably brighter. 5V is safe only if the module's SCL/SDA pull-ups go to its own 3.3 V regulator, not
+to VCC: power the module from 5V with SCL/SDA **disconnected** and measure
+SCL and SDA to GND. 3.3 V means 5V is fine; 5 V means stay on 3.3V (the
+FPGA pins are not 5 V tolerant). The tested module reads 3.3 V.
+
+Change the wiring with the board off. If the display loses power in the middle
+of a transfer, the I2C0 bus can stay stuck (`EAGAIN` / timeouts even with
+nothing connected) until the board is power cycled.
+
+```
+CAB                  REC 01:23     mode (CAB / BYPASS, + MUTE), REC with blinking dot
+V30_SM57_blend.wav                 IR name (current_ir.txt)
+IN [#####..........:...]  -14dB    input peak, label inverted while clipping
+OT [##########.....:...]   -6dB    output peak (bar -60..0 dBFS, tick at -12 dB)
+```
+
+```
+sudo -i python3 ~xilinx/cab_conv/oled.py test      # test pattern for 5 s
+sudo -i python3 ~xilinx/cab_conv/status.py         # the display daemon (8 Hz)
+sudo ./install_autostart.sh --oled                 # status.service at boot; combine: --fast --rec --oled
+```
+
+`status.py` only reads registers (no overlay reload) and shows "no overlay"
+until the overlay is loaded. If the OLED is missing it logs the I2C error and
+retries with a growing delay (1 s up to 30 s). Options: `--bus`, `--addr`,
+`--rate`, `--contrast`, `--flip` (rotate 180°). Like `meter.py` it clears the
+peak registers on every refresh, so do not run both at the same time. The IR
+name is read from `~xilinx/cab_conv/current_ir.txt`, which `autostart.py` and
+`load_ir.py` write when they load an IR.
 
 ## Extensions
 

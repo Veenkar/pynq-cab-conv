@@ -1,7 +1,7 @@
 # Boot-time start: load the overlay, configure the codec and load an IR.
 # Run by cab-conv.service after bootpy.service (which loads base.bit first).
 #   autostart.py <ir.wav> [--gain-db G] [--hp-db H] [--aux-db A]
-import argparse, sys
+import argparse, os, sys
 sys.path.insert(0, "/home/xilinx/cab_conv")
 from cab_conv import CabConv
 
@@ -16,3 +16,5 @@ cab = CabConv("/home/xilinx/cab_conv/cab_conv.bit", aux_gain_db=a.aux_db, hp_vol
 info = cab.load_ir(a.ir, gain_db=a.gain_db)
 print("cab_conv: %s loaded (%d taps, shift %d), gain %+.1f dB, HP %+.1f dB, LINE IN %+.1f dB"
       % (a.ir, info["taps"], info["shift"], a.gain_db, a.hp_db, a.aux_db), flush=True)
+with open("/home/xilinx/cab_conv/current_ir.txt", "w") as f:      # shown by status.py (OLED)
+    f.write(os.path.basename(a.ir) + "\n")

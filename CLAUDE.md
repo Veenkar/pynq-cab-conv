@@ -48,6 +48,9 @@ sw/example.py        usage example
 sw/board/            helper scripts used on the board in ~xilinx/cab_conv/ (run with sudo -i):
                      load_cab.py (overlay + IR), load_ir.py (IR only), meter.py (live levels), ctl.py (mute/HP vol),
                      record.py + record.service (dry/wet WAV recorder, `install_autostart.sh --rec`),
+                     oled.py (SSD1306 128x32 driver over /dev/i2c-0 + 5x7 font + Canvas; `oled.py test [--ascii]`),
+                     status.py + status.service (OLED daemon: mode, REC time, IR name from current_ir.txt written by
+                     autostart.py/load_ir.py, peak meters; reads regs only, `install_autostart.sh --oled`),
                      autostart.py + cab-conv.service (boot start, After=bootpy.service which loads base.bit),
                      install_autostart.sh [--fast|--restore] (installs the unit; --fast trims /boot/boot.py and
                      disables jupyter + clear_pl_statefile, which has Requires=jupyter),

@@ -49,6 +49,8 @@ connect_bd_intf_net [create_bd_intf_port -mode Master \
     [get_bd_intf_pins ps7/FIXED_IO]
 connect_bd_intf_net [create_bd_intf_port -mode Master \
     -vlnv xilinx.com:interface:iic_rtl:1.0 IIC_1] [get_bd_intf_pins ps7/IIC_1]
+connect_bd_intf_net [create_bd_intf_port -mode Master \
+    -vlnv xilinx.com:interface:iic_rtl:1.0 IIC_0] [get_bd_intf_pins ps7/IIC_0]
 
 # 122.88 MHz audio/DSP clock from FCLK0 (100 MHz); MCLK = clk / 10
 set cw [create_bd_cell -type ip -vlnv [ipvlnv clk_wiz] clk_wiz]

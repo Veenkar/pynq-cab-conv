@@ -40,7 +40,7 @@ vivado/
 sw/
   cab_conv.py       sterownik: overlay, kodek po I2C, ładowanie IR, model
   example.py        przykład użycia
-  board/            skrypty pomocnicze na płytkę (ładowanie, mierniki, sterowanie, nagrywanie)
+  board/            skrypty pomocnicze na płytkę (ładowanie, mierniki, sterowanie, nagrywanie, wyświetlacz OLED)
 ```
 
 ## Jak to działa
@@ -153,6 +153,7 @@ cd ~xilinx/cab_conv
 sudo ./install_autostart.sh            # sam autostart (IR gotowa ok. 160 s po włączeniu)
 sudo ./install_autostart.sh --fast     # + szybszy start (IR gotowa ok. 85 s)
 sudo ./install_autostart.sh --rec      # + record.service (nagrywanie BTN0); razem: --fast --rec
+sudo ./install_autostart.sh --oled     # + status.service (wyświetlacz OLED, patrz Wyświetlacz stanu)
 sudo ./install_autostart.sh --restore  # cofa wszystko, ustawienia PYNQ jak w obrazie
 ```
 
@@ -281,6 +282,52 @@ są poprawiane co 2 s, więc po utracie
 zasilania przepada najwyżej kilka ostatnich sekund. Na stałe: `install_autostart.sh
 --rec` instaluje `record.service` (po `cab-conv.service`), a wtedy BTN0 w każdej
 chwili startuje i kończy ujęcie. Każdy plik mono 24 bit rośnie o ok. 8,6 MB na minutę.
+
+## Wyświetlacz stanu (OLED)
+
+Opcjonalny moduł OLED 0,91" z SSD1306 (128×32, adres I2C 0x3C) pokazuje stan
+konwolwera. Jest podłączony do PS I2C0, który bitstream wyprowadza na piny
+SCL/SDA złącza Arduino (piny FPGA P15 / P16), czyli na płytce to
+`/dev/i2c-0` (kodek używa `/dev/i2c-1`). Cztery przewody żeńsko-żeńskie:
+
+| OLED | PYNQ-Z2 (złącze Arduino) |
+|------|--------------------------|
+| GND | GND |
+| VCC | 3.3V lub 5V (złącze zasilania), zob. niżej |
+| SCL | SCL (P15) |
+| SDA | SDA (P16) |
+
+VCC: 3.3V działa zawsze i jest zalecane; na testowanym module 5V nie dało
+wyraźnie jaśniejszego obrazu. 5V jest bezpieczne tylko wtedy, gdy rezystory podciągające SCL/SDA modułu idą do jego
+własnego stabilizatora 3,3 V, a nie do VCC: zasil moduł z 5V przy
+**odłączonych** SCL/SDA i zmierz SCL oraz SDA względem GND. 3,3 V oznacza, że
+5V jest w porządku; 5 V oznacza: zostań przy 3.3V (piny FPGA nie tolerują
+5 V). Testowany moduł pokazuje 3,3 V.
+
+Okablowanie zmieniaj przy wyłączonej płytce. Jeśli wyświetlacz straci zasilanie
+w trakcie transmisji, magistrala I2C0 może się zablokować (`EAGAIN` / timeouty
+nawet bez niczego podłączonego) aż do wyłączenia i włączenia płytki.
+
+```
+CAB                  REC 01:23     tryb (CAB / BYPASS, + MUTE), REC z migającą kropką
+V30_SM57_blend.wav                 nazwa IR (current_ir.txt)
+IN [#####..........:...]  -14dB    szczyt wejścia, etykieta odwrócona przy przesterowaniu
+OT [##########.....:...]   -6dB    szczyt wyjścia (pasek -60..0 dBFS, kreska przy -12 dB)
+```
+
+```
+sudo -i python3 ~xilinx/cab_conv/oled.py test      # obraz testowy na 5 s
+sudo -i python3 ~xilinx/cab_conv/status.py         # demon wyświetlacza (8 Hz)
+sudo ./install_autostart.sh --oled                 # status.service przy starcie; razem: --fast --rec --oled
+```
+
+`status.py` tylko czyta rejestry (bez przeładowania overlayu) i do czasu
+załadowania overlayu pokazuje "no overlay". Gdy brak OLED-a, loguje błąd I2C
+i ponawia próby z rosnącym opóźnieniem (od 1 s do 30 s). Opcje: `--bus`,
+`--addr`, `--rate`, `--contrast`, `--flip` (obrót o 180°). Podobnie jak
+`meter.py` zeruje rejestry szczytów przy każdym odświeżeniu, więc nie uruchamiaj
+ich jednocześnie. Nazwa IR jest czytana z `~xilinx/cab_conv/current_ir.txt`,
+który zapisują `autostart.py` i `load_ir.py` przy ładowaniu IR.
 
 ## Rozbudowa
 

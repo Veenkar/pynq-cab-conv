@@ -866,7 +866,9 @@ proc apply_pynq_z2_ps7_config {ps} {
     CONFIG.PCW_WDT_WDT_IO {<Select>} \
   ] $ps
 
-  # trim to what this design needs: GP0 master, FCLK0, I2C1 on EMIO
+  # trim to what this design needs: GP0 master, FCLK0, I2C1 (codec) and
+  # I2C0 (Arduino SCL/SDA, OLED) on EMIO. PYNQ's FSBL leaves MIO 50/51 as
+  # GPIO, so I2C0 reaches EMIO without changing BOOT.BIN; Linux: /dev/i2c-0.
   set_property -dict [list \
     CONFIG.PCW_USE_M_AXI_GP0 {1} \
     CONFIG.PCW_USE_M_AXI_GP1 {0} \
@@ -880,5 +882,7 @@ proc apply_pynq_z2_ps7_config {ps} {
     CONFIG.PCW_FPGA0_PERIPHERAL_FREQMHZ {100} \
     CONFIG.PCW_I2C1_PERIPHERAL_ENABLE {1} \
     CONFIG.PCW_I2C1_I2C1_IO {EMIO} \
+    CONFIG.PCW_I2C0_PERIPHERAL_ENABLE {1} \
+    CONFIG.PCW_I2C0_I2C0_IO {EMIO} \
   ] $ps
 }

@@ -10,14 +10,18 @@
 #                                            (the latter has Requires=jupyter.service)
 #   sudo ./install_autostart.sh --rec      also install + enable record.service (BTN0 recorder);
 #                                          combinable: --fast --rec
+#   sudo ./install_autostart.sh --oled     also install + enable status.service (SSD1306 OLED on
+#                                          /dev/i2c-0); combinable: --fast --rec --oled
 #   sudo ./install_autostart.sh --restore  undo everything: disable cab-conv.service and
-#                                          record.service, restore boot.py, re-enable Jupyter
+#                                          record.service and
+#                                          status.service, restore boot.py, re-enable Jupyter
 set -e
 
 [ "$(id -u)" = 0 ] || { echo "run as root (sudo)"; exit 1; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 UNIT=/etc/systemd/system/cab-conv.service
 RECUNIT=/etc/systemd/system/record.service
+OLEDUNIT=/etc/systemd/system/status.service
 
 fast_boot() {
     [ -f /boot/boot.py.orig ] || cp /boot/boot.py /boot/boot.py.orig
@@ -45,7 +49,8 @@ case "${1:-}" in
 --restore)
     systemctl disable --now cab-conv.service 2>/dev/null || true
     systemctl disable --now record.service 2>/dev/null || true
-    rm -f "$UNIT" "$RECUNIT"
+    systemctl disable --now status.service 2>/dev/null || true
+    rm -f "$UNIT" "$RECUNIT" "$OLEDUNIT"
     if [ -f /boot/boot.py.orig ]; then
         cp /boot/boot.py.orig /boot/boot.py && rm /boot/boot.py.orig && sync
     fi
@@ -53,11 +58,11 @@ case "${1:-}" in
     systemctl daemon-reload
     echo "restored PYNQ defaults (takes effect at next boot)"
     ;;
-""|--fast|--rec)
+""|--fast|--rec|--oled)
     for opt in "$@"; do
         case "$opt" in
-        --fast|--rec) ;;
-        *) sed -n '2,15p' "$0"; exit 1 ;;
+        --fast|--rec|--oled) ;;
+        *) sed -n '2,17p' "$0"; exit 1 ;;
         esac
     done
     install -m 644 "$HERE/cab-conv.service" "$UNIT"
@@ -66,16 +71,21 @@ case "${1:-}" in
         install -d -o xilinx -g xilinx /home/xilinx/cab_conv/rec 2>/dev/null || true
         ;;
     esac
+    case " $* " in *" --oled "*) install -m 644 "$HERE/status.service" "$OLEDUNIT" ;; esac
     systemctl daemon-reload
     systemctl enable cab-conv.service
     case " $* " in *" --rec "*)
         systemctl enable record.service
         echo "record.service enabled (takes go to ~xilinx/cab_conv/rec)" ;;
     esac
+    case " $* " in *" --oled "*)
+        systemctl enable status.service
+        echo "status.service enabled (OLED on /dev/i2c-0, addr 0x3C)" ;;
+    esac
     case " $* " in *" --fast "*) fast_boot ;; esac
     echo "cab-conv.service enabled; edit ExecStart in $UNIT to change IR/levels"
     ;;
 *)
-    sed -n '2,15p' "$0"; exit 1
+    sed -n '2,17p' "$0"; exit 1
     ;;
 esac
