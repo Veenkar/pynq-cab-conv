@@ -34,6 +34,7 @@ REG_ID, REG_PARAMS, REG_CTRL, REG_STATUS = 0x00, 0x04, 0x08, 0x0C
 REG_SHIFT0, REG_SHIFT1, REG_CLEAR, REG_SAMPLES = 0x10, 0x14, 0x18, 0x1C
 REG_PEAK_IN, REG_PEAK_OUT = 0x20, 0x24
 REG_REC_WPTR = 0x28
+CTRL_BYPASS = 1 << 0            # CTRL[0]: bypass (also toggled by BTN1, LED1 = !bypass)
 REC_WPTR = REG_REC_WPTR
 CTRL_REC = 1 << 6               # CTRL[6]: recording (also toggled by BTN0)
 COEF_BASE = 0x8000

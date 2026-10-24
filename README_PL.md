@@ -29,6 +29,7 @@ rtl/
   fir_engine.v      silnik FIR: tory MAC, linie opóźniające, banki współczynników
   i2s_master.v      I2S master dla ADAU1761 (kodek jako slave)
   clk_fwd.v         wyprowadzenie MCLK przez ODDR
+  debounce.v        synchronizacja i eliminacja drgań styków przycisków
 sim/
   tb_cab_conv.v     testbench: master AXI + model kodeka I2S
   run_sim.py        generuje bodźce, uruchamia Icarusa, sprawdza bit w bit
@@ -195,6 +196,14 @@ Wymagania co do pliku IR (`read_wav` / `prepare_ir` w `sw/cab_conv.py`):
 Sygnał z gitary/wzmacniacza nie ma takich wymagań: wchodzi analogowo na LINE IN
 (pełna skala ok. 1 Vrms przy wzmocnieniu AUX 0 dB).
 
+Przyciski i diody na płytce (obsługiwane w FPGA, więc działają bez żadnego
+skryptu; program widzi i może zmieniać te same bity `CTRL`):
+
+| Przycisk | Działanie | Dioda |
+|---|---|---|
+| BTN0 | włącza/wyłącza nagrywanie (`CTRL[6]`, zob. [Nagrywanie](#nagrywanie)) | LED0 miga (ok. 1,8 Hz) podczas nagrywania |
+| BTN1 | włącza/wyłącza bypass (`CTRL[0]`): sygnał suchy zamiast kolumny | LED1 świeci, gdy kolumna działa (bypass wyłączony, stan po włączeniu) |
+
 ## Podłączenie wzmacniacza: ważne
 
 - **Nigdy nie podłączaj wyjścia głośnikowego wprost do LINE IN.** Wzmacniacz
@@ -230,7 +239,7 @@ Praktyczne uwagi z testów z interfejsem audio:
 |---|---|---|
 | 0x0000 | ID | `0x43414256` ("CABV") |
 | 0x0004 | PARAMS | [15:0] liczba tapów, [23:16] log2 tapów na tor, [31:24] tory |
-| 0x0008 | CTRL | [0] bypass, [1] mute, [3:2] wejście (0 L, 1 R, 2 (L+R)/2), [4] bank, [5] mokry tylko na L, [6] REC (nagrywanie; BTN0 przełącza) |
+| 0x0008 | CTRL | [0] bypass (BTN1 przełącza), [1] mute, [3:2] wejście (0 L, 1 R, 2 (L+R)/2), [4] bank, [5] mokry tylko na L, [6] REC (nagrywanie; BTN0 przełącza) |
 | 0x000C | STATUS | [0] aktywny bank, [1] przester wejścia, [2] przester wyjścia, [3] overrun |
 | 0x0010 | SHIFT0 | przesunięcie dla banku 0 |
 | 0x0014 | SHIFT1 | przesunięcie dla banku 1 |
@@ -244,33 +253,34 @@ Praktyczne uwagi z testów z interfejsem audio:
 
 ## Nagrywanie
 
-Płytka potrafi nagrać suchy sygnał wejściowy (lewy kanał WAV) i sygnał po
-konwolucji (prawy kanał) jako stereofoniczny plik WAV 24 bit / 48 kHz na karcie
-SD, np. do porównań albo dalszej obróbki offline. Bez DMA: PL zapisuje oba
+Płytka potrafi nagrać suchy sygnał wejściowy i sygnał po konwolucji jako dwa
+monofoniczne pliki WAV 24 bit / 48 kHz na karcie SD, np. do porównań albo dalszej obróbki offline. Bez DMA: PL zapisuje oba
 sygnały do bufora kołowego 8192 klatek (170,7 ms), dopóki ustawiony jest
 `CTRL[6]` (REC), a PS opróżnia go przez łącze AXI4-Lite
 (`CabConv.read_capture`). Sygnał suchy to wejście silnika po wyborze wejścia,
 mokry to wyjście silnika (przed bypass/mute); oba są zgrane na ten sam numer
-próbki, więc dla pliku zachodzi dokładnie `mokry = IR * suchy`.
+próbki, więc między plikami zachodzi dokładnie `mokry = IR * suchy`.
 
 REC włącza się programowo (`cab.rec_start()` / `cab.rec_stop()` albo opcja
 `--start` w `record.py`) lub naciśnięciem **BTN0** (z odbijaniem styków,
-przełącza). **LED0** odzwierciedla REC. PS czyta bufor co ok. 20 ms, więc
+przełącza). **LED0** miga, dopóki REC jest włączony. PS czyta bufor co ok. 20 ms, więc
 przepełnienie grozi dopiero, gdy proces zostanie zagłodzony na ponad ~170 ms;
 przepełnienie jest zgłaszane, a utracone klatki wypełniane zerami.
 
 ```
-sudo -i python3 ~xilinx/cab_conv/record.py              # demon: jeden WAV na okres REC
+sudo -i python3 ~xilinx/cab_conv/record.py              # demon: para suchy + mokry na okres REC
 sudo -i python3 ~xilinx/cab_conv/record.py --once       # czeka na REC, nagrywa jedno ujęcie, kończy
 sudo -i python3 ~xilinx/cab_conv/record.py --once --start   # start od razu, stop BTN0 lub Ctrl+C
 sudo -i python3 ~xilinx/cab_conv/record.py --dir /media/usb # inny katalog docelowy
 ```
 
-Pliki nazywają się `rec_YYYYmmdd_HHMMSS.wav` i leżą w `~xilinx/cab_conv/rec/`;
-są zapisywane na bieżąco, a nagłówek jest poprawiany co 2 s, więc po utracie
+Każde ujęcie to para `rec_YYYYmmdd_HHMMSS_dry.wav` + `rec_YYYYmmdd_HHMMSS_wet.wav`
+w `~xilinx/cab_conv/rec/`, zgranych co do próbki i równej długości (plik suchy
+można od razu wrzucić do DAW do reampingu). Są zapisywane na bieżąco, a nagłówki
+są poprawiane co 2 s, więc po utracie
 zasilania przepada najwyżej kilka ostatnich sekund. Na stałe: `install_autostart.sh
 --rec` instaluje `record.service` (po `cab-conv.service`), a wtedy BTN0 w każdej
-chwili startuje i kończy ujęcie. Stereo 24 bit to ok. 17 MB na minutę.
+chwili startuje i kończy ujęcie. Każdy plik mono 24 bit rośnie o ok. 8,6 MB na minutę.
 
 ## Rozbudowa
 

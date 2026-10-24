@@ -15,7 +15,7 @@ This file is for working on the code.
 - **Verified on hardware** (PYNQ Linux 3.0): overlay + codec init, bypass, IR load / bank switch,
   real-time convolution. Measured through a Focusrite (sweep-free, riff cross-spectrum): response
   matches the IR within ~0.5 dB 60 Hz–5 kHz, coherence 0.97–1.0, fs offset vs Focusrite ~5–10 ppm.
-- Recording (dry L / wet R WAV via a PL BRAM ring, BTN0/LED0): verified on hardware: 30 s take with 0 frames lost, wet channel bit-exact vs `fir_model(dry)`; BTN0 toggling + LED0 work.
+- Recording (dry + wet mono WAV pair via a PL BRAM ring, BTN0/LED0): verified on hardware: 30 s take with 0 frames lost, wet channel bit-exact vs `fir_model(dry)`; BTN0 toggling + LED0 work.
 - PYNQ 3.0: run the driver as root via `sudo -i python3 ...` (login shell sources XRT + venv;
   plain `sudo python3` fails with "No Devices Found"). `import pynq` takes ~10 s on the board.
 - Each `CabConv(...)` with `download=True` reloads the bitstream and wipes the IR; use
@@ -36,6 +36,7 @@ rtl/cab_conv_top.v   AXI4-Lite regs, input select, bypass/mute, peak/clip meters
 rtl/fir_engine.v     multi-lane time-multiplexed FIR, ping-pong coef banks
 rtl/i2s_master.v     I2S master (codec is slave), 64 BCLK/frame, 24-bit in 32-bit slots
 rtl/clk_fwd.v        ODDR clock forwarding (plain flop under `SIMULATION`)
+rtl/debounce.v       button sync + debounce (BTN0 -> REC, BTN1 -> bypass; LED0 blinks while REC, LED1 = !bypass)
 sim/tb_cab_conv.v    AXI BFM + behavioural ADAU1761 I2S slave
 sim/run_sim.py       stimulus gen, runs iverilog/vvp, bit-exact check vs Python model
 vivado/build.tcl     project + block design + bitstream, copies .bit/.hwh to build/
@@ -66,7 +67,7 @@ the global interpreter). Run PC-side Python with `.venv/Scripts/python.exe` (Win
 `.venv/bin/python`; repo scripts should re-exec into `.venv` when it exists, like `run_sim.py`.
 New PC-side deps go into `requirements.txt`. Board scripts use the PYNQ image's Python.
 Sim needs `iverilog`, `numpy`, `scipy`. Compile flags used: `-g2005 -DSIMULATION -DNLANE= -DLW= -DHALF=`.
-`sim/work*/` are generated outputs, don't commit them.
+`sim/work/` (small) and `sim/work_full/` (`--full`) are generated outputs, so both configs can run at once; don't commit them.
 
 **After any RTL or model change, run `run_sim.py` (and `--full` for engine/timing changes) and keep it at PASS.**
 
@@ -91,7 +92,7 @@ Sim needs `iverilog`, `numpy`, `scipy`. Compile flags used: `-g2005 -DSIMULATION
 
 ## Register map
 Documented at the top of `rtl/cab_conv_top.v` and in README.md / README_PL.md. Coefs at `0x8000 + 4*i`, write-only.
-AXI window is 128 KiB. Recording: `CTRL[6]` REC (RW, BTN0 toggles, LED0 follows), `0x28` REC_WPTR (RO, frames since
+AXI window is 128 KiB. Recording: `CTRL[6]` REC (RW, BTN0 toggles, LED0 blinks while set), `0x28` REC_WPTR (RO, frames since
 REC rose), `0x10000 + 4*i` CAPTURE ring (RO, 8192 frames, word 2k = dry x, 2k+1 = wet y, sign-extended 24-bit).
 `record.py` attaches by raw MMIO (no CabConv, codec not reconfigured) and writes `~xilinx/cab_conv/rec/*.wav`.
 If you change the map, update RTL header, both README tables, `sw/cab_conv.py` constants and the testbench together.

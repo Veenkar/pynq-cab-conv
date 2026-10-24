@@ -9,7 +9,7 @@ against the Python model in sw/cab_conv.py.
 The captured stream must be: unity IR -> IR A -> IR B -> bypass -> mute,
 with every switch landing exactly on a sample boundary. Also checks the capture
 ring (REC via AXI, ring wraps) bit-exactly against the model and the debounced
-record button / led_rec.
+record button / led_rec and the bypass button / led_cab.
 """
 
 import argparse
@@ -64,7 +64,7 @@ def hex18(v):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--full", action="store_true", help="4 x 2048 taps")
-    ap.add_argument("--workdir", default=os.path.join(HERE, "work"))
+    ap.add_argument("--workdir", help="default sim/work, or sim/work_full with --full")
     args = ap.parse_args()
 
     if args.full:
@@ -96,6 +96,8 @@ def main():
     xl = guitar_like(nin, fs, rng, 0.5)
     xr = guitar_like(nin, fs, rng, 0.25)
 
+    if args.workdir is None:      # separate dirs so both configs can run at once
+        args.workdir = os.path.join(HERE, "work_full" if args.full else "work")
     os.makedirs(args.workdir, exist_ok=True)
     w = os.path.abspath(args.workdir)
     with open(os.path.join(w, "inl.hex"), "w") as f:
@@ -108,7 +110,7 @@ def main():
         f.write("\n".join(hex18(v) for v in qb) + "\n")
 
     rtl = [os.path.join(ROOT, "rtl", n) for n in
-           ("clk_fwd.v", "i2s_master.v", "fir_engine.v", "cab_conv_top.v")]
+           ("clk_fwd.v", "debounce.v", "i2s_master.v", "fir_engine.v", "cab_conv_top.v")]
     vvp = os.path.join(w, "tb.vvp")
     subprocess.check_call(
         ["iverilog", "-g2005", "-DSIMULATION", "-DNLANE=%d" % nlane,

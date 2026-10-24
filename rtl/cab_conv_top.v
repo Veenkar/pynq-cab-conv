@@ -7,7 +7,7 @@
 //   0x0000  ID        RO  0x43414256 ("CABV")
 //   0x0004  PARAMS    RO  [15:0] taps total, [23:16] log2 taps/lane,
 //                         [31:24] lanes
-//   0x0008  CTRL      RW  [0] bypass (dry signal out)
+//   0x0008  CTRL      RW  [0] bypass (dry signal out, also toggled by BTN1)
 //                         [1] mute
 //                         [3:2] input: 0 = left, 1 = right, 2 = (L+R)/2
 //                         [4] bank select (requested active coef bank)
@@ -32,6 +32,8 @@
 //                         y = engine output (independent of bypass/mute).
 //
 // The codec address pins are driven high (I2C address 0x3B, like PYNQ).
+// Buttons: BTN0 toggles REC (LED0 blinks while recording), BTN1 toggles bypass
+// (LED1 = cab on).
 
 `timescale 1ns / 1ps
 
@@ -40,7 +42,8 @@ module cab_conv_top #(
     parameter LW    = 11,           // 2048 taps per lane
     parameter HALF  = 20,           // aclk cycles per BCLK half period
     parameter CAP_LOG2 = 13,        // capture ring: 2^CAP_LOG2 frames
-    parameter DEB_BITS = 22         // button debounce: 2^DEB_BITS stable cycles
+    parameter DEB_BITS = 22,        // button debounce: 2^DEB_BITS stable cycles
+    parameter BLINK_BIT = 25        // REC LED blink period 2^(BLINK_BIT+1) cycles (0.55 s)
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 aclk CLK" *)
     (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s_axi, ASSOCIATED_RESET aresetn" *)
@@ -78,9 +81,11 @@ module cab_conv_top #(
     input  wire        sdata_i,
     output wire [1:0]  codec_addr,
 
-    // record button / LED
-    input  wire        btn_rec,
-    output wire        led_rec
+    // buttons / LEDs
+    input  wire        btn_rec,     // BTN0: toggle REC
+    output wire        led_rec,     // LED0: blinks while recording
+    input  wire        btn_byp,     // BTN1: toggle bypass
+    output wire        led_cab      // LED1: cab on (bypass off)
 );
 
     localparam DW        = 24;
@@ -131,29 +136,13 @@ module cab_conv_top #(
 
     wire       bank_act, overrun;
 
-    // ---------------- record button: 2-FF sync + debounce ----------------
-    reg [1:0]          btn_sync;
-    reg                btn_deb, btn_deb_q;
-    reg [DEB_BITS-1:0] deb_cnt;
-    always @(posedge aclk) begin
-        btn_sync <= {btn_sync[0], btn_rec};
-        if (rst) begin
-            btn_deb   <= 1'b0;
-            btn_deb_q <= 1'b0;
-            deb_cnt   <= {DEB_BITS{1'b0}};
-        end else begin
-            btn_deb_q <= btn_deb;
-            if (btn_sync[1] == btn_deb)
-                deb_cnt <= {DEB_BITS{1'b0}};
-            else begin
-                deb_cnt <= deb_cnt + 1'b1;
-                if (&deb_cnt) btn_deb <= btn_sync[1];
-            end
-        end
-    end
-    wire btn_press = btn_deb && !btn_deb_q;
+    // ---------------- buttons (debounced) and LEDs ----------------
+    wire rec_press, byp_press;
+    debounce #(.DEB_BITS(DEB_BITS)) u_deb_rec (.clk(aclk), .rst(rst), .btn(btn_rec), .press(rec_press));
+    debounce #(.DEB_BITS(DEB_BITS)) u_deb_byp (.clk(aclk), .rst(rst), .btn(btn_byp), .press(byp_press));
 
-    assign led_rec = r_rec;
+    assign led_cab = !r_bypass;
+    // led_rec is driven below, next to the capture ring (blinks while REC = 1)
 
     // ---------------- AXI write channel ----------------
     always @(posedge aclk) begin
@@ -179,8 +168,10 @@ module cab_conv_top #(
             s_axi_awready <= 1'b0;
             s_axi_wready  <= 1'b0;
 
-            if (btn_press)
+            if (rec_press)
                 r_rec <= ~r_rec;
+            if (byp_press)
+                r_bypass <= ~r_bypass;
 
             if (s_axi_bvalid && s_axi_bready)
                 s_axi_bvalid <= 1'b0;
@@ -399,6 +390,16 @@ module cab_conv_top #(
 
     (* ram_style = "block" *)
     reg [2*DW-1:0] cap_mem [0:(1<<CAP_LOG2)-1];
+
+    // REC LED: on for the first half of each blink period, restarted at REC start
+    reg [BLINK_BIT:0] blink;
+    always @(posedge aclk) begin
+        if (rst || rec_rise)
+            blink <= {(BLINK_BIT+1){1'b0}};
+        else
+            blink <= blink + 1'b1;
+    end
+    assign led_rec = r_rec && !blink[BLINK_BIT];
 
     always @(posedge aclk) begin
         r_rec_q <= r_rec;

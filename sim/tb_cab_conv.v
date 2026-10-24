@@ -8,7 +8,8 @@
 //   load IR A into bank 1, switch            -> F1 frames
 //   load IR B into bank 0, switch mid-stream -> F2 frames
 //   record into the capture ring (wraps), stop, dump ring to cap.txt
-//   record button: glitch, bouncing press / release x2, led_rec check
+//   record button: glitch, bouncing press / release x2, led_rec blinks only while REC
+//   bypass button (during mute): press x2 toggles CTRL[0], led_cab check
 //   bypass on                                -> F3 frames
 //   mute on                                  -> until input runs out
 
@@ -28,6 +29,9 @@ module tb_cab_conv;
 `ifndef CAP_LOG2
 `define CAP_LOG2 5
 `endif
+`ifndef BLINK_BIT
+`define BLINK_BIT 3
+`endif
 `ifndef DEB_BITS
 `define DEB_BITS 4
 `endif
@@ -38,6 +42,7 @@ module tb_cab_conv;
     localparam CAP_LOG2 = `CAP_LOG2;
     localparam CAPN  = 1 << CAP_LOG2;       // frames in the capture ring
     localparam DEB_BITS = `DEB_BITS;
+    localparam BLINK_BIT = `BLINK_BIT;
     localparam NTAPS = NLANE << LW;
     localparam MAXN  = 65536;
 
@@ -57,9 +62,11 @@ module tb_cab_conv;
     wire [1:0] codec_addr;
     reg  btn_rec = 0;
     wire led_rec;
+    reg  btn_byp = 0;
+    wire led_cab;
 
     cab_conv_top #(.NLANE(NLANE), .LW(LW), .HALF(HALF),
-                   .CAP_LOG2(CAP_LOG2), .DEB_BITS(DEB_BITS)) dut (
+                   .CAP_LOG2(CAP_LOG2), .DEB_BITS(DEB_BITS), .BLINK_BIT(BLINK_BIT)) dut (
         .aclk(aclk), .aresetn(aresetn),
         .s_axi_awaddr(awaddr), .s_axi_awprot(3'b000), .s_axi_awvalid(awvalid),
         .s_axi_awready(awready),
@@ -72,7 +79,8 @@ module tb_cab_conv;
         .s_axi_rready(rready),
         .mclk(mclk), .bclk(bclk), .lrclk(lrclk), .sdata_o(sdata_o),
         .sdata_i(sdata_i), .codec_addr(codec_addr),
-        .btn_rec(btn_rec), .led_rec(led_rec)
+        .btn_rec(btn_rec), .led_rec(led_rec),
+        .btn_byp(btn_byp), .led_cab(led_cab)
     );
 
     // ------------------------------------------------------------------
@@ -207,14 +215,49 @@ module tb_cab_conv;
         end
     endtask
 
+    // same for the bypass button
+    task bbtn(input v, input integer n);
+        begin
+            btn_byp <= v;
+            repeat (n) @(posedge aclk);
+        end
+    endtask
+
+    task bbtn_bounce(input v);
+        begin
+            bbtn(v, 3);  bbtn(!v, 2);  bbtn(v, 4);  bbtn(!v, 3);
+            bbtn(v, 4 * (1 << DEB_BITS));
+        end
+    endtask
+
+    // led_cab must be the inverse of CTRL[0]; CTRL[1] (mute) must stay set
+    task check_cab(input exp_led, input [255:0] what);
+        begin
+            axi_read(17'h0008, r);
+            if (led_cab !== exp_led || r[0] !== !exp_led || r[1] !== 1'b1)
+                $display("FAIL: %0s (led_cab=%b ctrl=%02x, expected led %b)",
+                         what, led_cab, r[7:0], exp_led);
+        end
+    endtask
+
     integer fcap, wp0, wp1, nrec;
+    reg seen0, seen1;
     task check_led(input exp, input [255:0] what);
         begin
             axi_read(17'h0008, r);
-            if (led_rec !== exp || r[6] !== exp) begin
-                $display("FAIL: %0s (led=%b ctrl6=%b, expected %b)",
-                         what, led_rec, r[6], exp);
+            // over two blink periods the LED must show both levels while
+            // recording and stay dark otherwise
+            seen0 = 0; seen1 = 0;
+            repeat (4 << BLINK_BIT) begin
+                @(posedge aclk);
+                if (led_rec === 1'b0) seen0 = 1;
+                if (led_rec === 1'b1) seen1 = 1;
             end
+            if (r[6] !== exp || seen1 !== exp || seen0 !== 1'b1 && exp) begin
+                $display("FAIL: %0s (led seen0=%b seen1=%b ctrl6=%b, expected %b)",
+                         what, seen0, seen1, r[6], exp);
+            end
+            if (!exp && seen1) $display("FAIL: %0s (led_rec lit while not recording)", what);
         end
     endtask
 
@@ -234,6 +277,8 @@ module tb_cab_conv;
 
         repeat (20) @(posedge aclk);
         aresetn = 1;
+        repeat (2) @(posedge aclk);
+        if (led_cab !== 1'b1) $display("FAIL: led_cab not on after reset");
 
         axi_read(16'h0000, r);
         $display("ID      = %08x", r);
@@ -329,6 +374,8 @@ module tb_cab_conv;
         // ---- bypass ----
         $display("[%0d] bypass", fidx);
         axi_write(16'h0008, 32'h01);
+        @(posedge aclk);
+        if (led_cab !== 1'b0) $display("FAIL: led_cab on during AXI bypass");
         wait_frames(f3);
 
         // ---- mute ----
@@ -337,6 +384,20 @@ module tb_cab_conv;
         axi_write(16'h0018, 32'h1);         // clear flags
         axi_read(16'h000C, r);
         if (r[2] !== 1'b0) $display("FAIL: clear did not work");
+
+        // ---- bypass button (mute hides the output, so the audio check is unaffected) ----
+        $display("[%0d] bypass button test", fidx);
+        check_cab(1'b1, "led_cab after mute write (bypass 0)");
+        bbtn(1, 5);  bbtn(0, 3 * (1 << DEB_BITS));
+        check_cab(1'b1, "led_cab after glitch");
+        bbtn_bounce(1'b1);
+        check_cab(1'b0, "led_cab after bypass press 1");
+        bbtn_bounce(1'b0);
+        check_cab(1'b0, "led_cab after bypass release 1");
+        bbtn_bounce(1'b1);
+        check_cab(1'b1, "led_cab after bypass press 2");
+        bbtn_bounce(1'b0);
+        check_cab(1'b1, "led_cab after bypass release 2");
         while (fidx < nin + 4) @(posedge aclk);
 
         axi_read(16'h000C, r);

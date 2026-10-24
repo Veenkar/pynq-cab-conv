@@ -1,9 +1,10 @@
-# Recorder daemon: saves the dry input (L) and the convolved output (R) to a
-# stereo 24-bit 48 kHz WAV while CTRL[6] REC is set (software or BTN0).
+# Recorder daemon: saves the dry input and the convolved output to two mono
+# 24-bit 48 kHz WAVs while CTRL[6] REC is set (software or BTN0).
 # Reads cab_conv registers only (no overlay reload, codec untouched).
 #   sudo -i python3 ~xilinx/cab_conv/record.py [--dir D] [--once] [--start]
-# Files: <dir>/rec_YYYYmmdd_HHMMSS.wav (default dir ~xilinx/cab_conv/rec).
-# The WAV header is patched every ~2 s, so a power cut leaves a usable file.
+# Files: <dir>/rec_YYYYmmdd_HHMMSS_dry.wav + _wet.wav, sample-aligned
+# (default dir ~xilinx/cab_conv/rec).
+# The WAV headers are patched every ~2 s, so a power cut leaves usable files.
 import argparse, math, os, signal, struct, sys, time
 import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -14,7 +15,7 @@ FS = 48000
 
 
 class WavWriter:
-    """Incremental stereo 24-bit PCM WAV with a header that is always valid
+    """Incremental 24-bit PCM WAV (any channel count) with a header that is always valid
     on disk (patched every `patch_s` seconds and on close)."""
 
     def __init__(self, path, fs=FS, channels=2, patch_s=2.0):
@@ -66,7 +67,7 @@ def db(v):
 class Recorder(CaptureMixin):
     def __init__(self, mmio, outdir):
         self.mmio, self.outdir = mmio, outdir
-        self.w = None
+        self.w = None               # [dry, wet] writers while recording
         self.rptr = 0
         self.lost = 0
         self.pk = [0, 0]
@@ -77,12 +78,18 @@ class Recorder(CaptureMixin):
             os.makedirs(self.outdir)
             # a new dir gets the parent's owner (xilinx, not root under sudo)
             self._chown(self.outdir, os.path.dirname(os.path.abspath(self.outdir)))
-        path = os.path.join(self.outdir, time.strftime("rec_%Y%m%d_%H%M%S.wav"))
-        self.w = WavWriter(path)
-        self._chown(path, self.outdir)
+        base = os.path.join(self.outdir, time.strftime("rec_%Y%m%d_%H%M%S"))
+        self.w = [WavWriter(base + "_dry.wav", channels=1),
+                  WavWriter(base + "_wet.wav", channels=1)]
+        for w in self.w:
+            self._chown(w.path, self.outdir)
         self.rptr, self.lost, self.pk = 0, 0, [0, 0]
         self.t_print = time.time()
-        print("recording -> %s" % path, flush=True)
+        print("recording -> %s_{dry,wet}.wav" % base, flush=True)
+
+    def _write(self, d):
+        for c, w in enumerate(self.w):
+            w.write(d[:, c:c + 1])
 
     def _chown(self, path, like):
         try:
@@ -99,17 +106,17 @@ class Recorder(CaptureMixin):
             self.lost += e.lost
             print("OVERFLOW: %d frames lost (zeros inserted)" % e.lost, flush=True)
             n = (e.wptr - self.rptr) & 0xFFFFFFFF
-            self.w.write(np.zeros((n, 2), dtype=np.int32))
+            self._write(np.zeros((n, 2), dtype=np.int32))
             self.rptr = e.wptr
             return
         if len(d):
-            self.w.write(d)
+            self._write(d)
             self.pk[0] = max(self.pk[0], int(np.abs(d[:, 0]).max()))
             self.pk[1] = max(self.pk[1], int(np.abs(d[:, 1]).max()))
         now = time.time()
         if now - self.t_print >= 1.0:
             print("%7.1f s  dry %6.1f dBFS  wet %6.1f dBFS  lost %d"
-                  % (self.w.frames / FS, db(self.pk[0]), db(self.pk[1]), self.lost), flush=True)
+                  % (self.w[0].frames / FS, db(self.pk[0]), db(self.pk[1]), self.lost), flush=True)
             self.pk, self.t_print = [0, 0], now
 
     def close(self):
@@ -118,14 +125,15 @@ class Recorder(CaptureMixin):
                 self.drain()        # REC is off by now, the ring is stable
             except Exception as e:
                 print("final drain failed: %s" % e, flush=True)
-            self.w.close()
-            print("closed %s: %.1f s, %d frames lost" %
-                  (self.w.path, self.w.frames / FS, self.lost), flush=True)
+            for w in self.w:
+                w.close()
+            print("closed %s + _wet.wav: %.1f s, %d frames lost" %
+                  (self.w[0].path, self.w[0].frames / FS, self.lost), flush=True)
             self.w = None
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Record dry (L) / wet (R) to a 24-bit WAV while REC is set")
+    ap = argparse.ArgumentParser(description="Record dry and wet to two mono 24-bit WAVs while REC is set")
     ap.add_argument("--dir", default=os.path.expanduser("~xilinx/cab_conv/rec"))
     ap.add_argument("--once", action="store_true",
                     help="record one take (the next REC) until REC=0, then exit")

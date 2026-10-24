@@ -29,6 +29,7 @@ rtl/
   fir_engine.v      FIR engine: MAC lanes, delay lines, coefficient banks
   i2s_master.v      I2S master for the ADAU1761 (codec is the slave)
   clk_fwd.v         MCLK forwarded through an ODDR
+  debounce.v        push-button synchroniser + debounce
 sim/
   tb_cab_conv.v     testbench: AXI master + I2S codec model
   run_sim.py        generates stimulus, runs Icarus, checks bit-exact
@@ -195,6 +196,14 @@ IR file requirements (`read_wav` / `prepare_ir` in `sw/cab_conv.py`):
 The guitar/amp signal has no such requirements: it comes in as analog through
 LINE IN (full scale about 1 Vrms at 0 dB AUX gain).
 
+Buttons and LEDs on the board (handled in the FPGA, so they work without any
+script running; software sees and can change the same `CTRL` bits):
+
+| Button | Action | LED |
+|---|---|---|
+| BTN0 | toggle recording (`CTRL[6]`, see [Recording](#recording)) | LED0 blinks (~1.8 Hz) while recording |
+| BTN1 | toggle bypass (`CTRL[0]`): dry signal instead of the cab | LED1 on while the cab is active (bypass off, the power-on state) |
+
 ## Connecting the amp: important
 
 - **Never connect the speaker output directly to LINE IN.** A 50 W amp into
@@ -230,7 +239,7 @@ Practical notes from testing with an audio interface:
 |---|---|---|
 | 0x0000 | ID | `0x43414256` ("CABV") |
 | 0x0004 | PARAMS | [15:0] number of taps, [23:16] log2 taps per lane, [31:24] lanes |
-| 0x0008 | CTRL | [0] bypass, [1] mute, [3:2] input (0 L, 1 R, 2 (L+R)/2), [4] bank, [5] wet on L only, [6] REC (recording; BTN0 toggles it) |
+| 0x0008 | CTRL | [0] bypass (BTN1 toggles it), [1] mute, [3:2] input (0 L, 1 R, 2 (L+R)/2), [4] bank, [5] wet on L only, [6] REC (recording; BTN0 toggles it) |
 | 0x000C | STATUS | [0] active bank, [1] input clip, [2] output clip, [3] overrun |
 | 0x0010 | SHIFT0 | shift for bank 0 |
 | 0x0014 | SHIFT1 | shift for bank 1 |
@@ -244,33 +253,34 @@ Practical notes from testing with an audio interface:
 
 ## Recording
 
-The board can record the dry input (left channel of the WAV) and the
-convolved output (right channel) as a stereo 24-bit 48 kHz WAV on the SD card,
-for example to compare or re-process a take offline. No DMA is involved: the PL
+The board can record the dry input and the convolved output as two mono
+24-bit 48 kHz WAVs on the SD card, for example to compare or re-process a take offline. No DMA is involved: the PL
 writes both signals into a ring buffer of 8192 frames (170.7 ms) while `CTRL[6]`
 (REC) is set, and the PS drains it over the AXI4-Lite link
 (`CabConv.read_capture`). Dry is the engine input after the input select, wet
 is the engine output (before bypass/mute), and both are aligned to the same
-sample index, so `wet = IR * dry` holds exactly for the file.
+sample index, so `wet = IR * dry` holds exactly between the two files.
 
 REC is switched by software (`cab.rec_start()` / `cab.rec_stop()`, or the
 `--start` option of `record.py`) or by a press of **BTN0** (debounced, toggles).
-**LED0** follows REC. The PS reads the ring about every 20 ms, so the ring only
+**LED0** blinks while REC is on. The PS reads the ring about every 20 ms, so the ring only
 overflows if the process is starved for more than ~170 ms; an overflow is
 reported and the lost frames are filled with zeros.
 
 ```
-sudo -i python3 ~xilinx/cab_conv/record.py              # daemon: one WAV per REC period
+sudo -i python3 ~xilinx/cab_conv/record.py              # daemon: one dry + wet pair per REC period
 sudo -i python3 ~xilinx/cab_conv/record.py --once       # wait for REC, record one take, exit
 sudo -i python3 ~xilinx/cab_conv/record.py --once --start   # start now, stop with BTN0 or Ctrl+C
 sudo -i python3 ~xilinx/cab_conv/record.py --dir /media/usb # other target directory
 ```
 
-Files are named `rec_YYYYmmdd_HHMMSS.wav` in `~xilinx/cab_conv/rec/` and are
-written incrementally; the header is patched every 2 s, so a power cut loses
+Each take is a pair `rec_YYYYmmdd_HHMMSS_dry.wav` + `rec_YYYYmmdd_HHMMSS_wet.wav`
+in `~xilinx/cab_conv/rec/`, sample-aligned and of equal length (the dry file
+can go straight back into a DAW for reamping). They are written incrementally;
+the headers are patched every 2 s, so a power cut loses
 at most the last couple of seconds. For a permanent setup, `install_autostart.sh
 --rec` installs `record.service` (after `cab-conv.service`), and then BTN0 starts
-and stops a take at any time. A 24-bit stereo take is about 17 MB per minute.
+and stops a take at any time. Each 24-bit mono file grows by about 8.6 MB per minute.
 
 ## Extensions
 

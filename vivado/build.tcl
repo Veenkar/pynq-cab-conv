@@ -98,6 +98,10 @@ create_bd_port -dir I btn_rec
 connect_bd_net [get_bd_ports btn_rec] [get_bd_pins cab_conv/btn_rec]
 create_bd_port -dir O led_rec
 connect_bd_net [get_bd_ports led_rec] [get_bd_pins cab_conv/led_rec]
+create_bd_port -dir I btn_byp
+connect_bd_net [get_bd_ports btn_byp] [get_bd_pins cab_conv/btn_byp]
+create_bd_port -dir O led_cab
+connect_bd_net [get_bd_ports led_cab] [get_bd_pins cab_conv/led_cab]
 
 # address map: 128 KiB at 0x43C00000
 assign_bd_address

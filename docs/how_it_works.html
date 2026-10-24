@@ -545,7 +545,7 @@ if (ph == 0) begin
 
 <section>
   <h2>Recording</h2>
-  <p>The capture ring is a BRAM of 8192 frames (170.7 ms). While REC is on (BTN0, or a register bit), every frame stores the selected input and the FIR output for the same sample. Linux reads whatever is new about every 20 ms over AXI4-Lite and appends it to a stereo 24-bit WAV, with the dry signal on the left and the wet on the right. The ring gives Linux eight times more slack than it needs, so in testing no frame was lost.</p>
+  <p>The capture ring is a BRAM of 8192 frames (170.7 ms). While REC is on (BTN0, or a register bit), every frame stores the selected input and the FIR output for the same sample. Linux reads whatever is new about every 20 ms over AXI4-Lite and appends it to two mono 24-bit WAVs, one dry and one wet, sample-aligned. The ring gives Linux eight times more slack than it needs, so in testing no frame was lost.</p>
   <details class="code" open><summary><span class="mono">rtl/cab_conv_top.v</span> · capture ring</summary><pre><code>wire cap_we   = r_rec &amp;&amp; !rec_rise &amp;&amp; y_done;   // x_dly belongs to this y
 
 (* ram_style = &quot;block&quot; *)
