@@ -308,10 +308,10 @@ of a transfer, the I2C0 bus can stay stuck (`EAGAIN` / timeouts even with
 nothing connected) until the board is power cycled.
 
 ```
-CAB                  REC 01:23     mode (CAB / BYPASS, + MUTE), REC with blinking dot
-V30_SM57_blend.wav                 IR name (current_ir.txt)
-IN [#####..........:...]  -14dB    input peak, label inverted while clipping
-OT [##########.....:...]   -6dB    output peak (bar -60..0 dBFS, tick at -12 dB)
+CAB V30_SM57_blend.wav             mode (CAB / BYPASS, + MUTE) and IR name (current_ir.txt);
+                                   while recording: mode + REC with blinking dot + mm:ss
+[[#########.........:.....]]       input peak  (bar -60..0 dBFS, tick at -12 dB, 2 px frame)
+[[##############....:.....]]       output peak (a clipping meter is shown inverted)
 ```
 
 ```

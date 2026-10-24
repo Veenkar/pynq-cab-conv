@@ -309,10 +309,10 @@ w trakcie transmisji, magistrala I2C0 może się zablokować (`EAGAIN` / timeout
 nawet bez niczego podłączonego) aż do wyłączenia i włączenia płytki.
 
 ```
-CAB                  REC 01:23     tryb (CAB / BYPASS, + MUTE), REC z migającą kropką
-V30_SM57_blend.wav                 nazwa IR (current_ir.txt)
-IN [#####..........:...]  -14dB    szczyt wejścia, etykieta odwrócona przy przesterowaniu
-OT [##########.....:...]   -6dB    szczyt wyjścia (pasek -60..0 dBFS, kreska przy -12 dB)
+CAB V30_SM57_blend.wav             tryb (CAB / BYPASS, + MUTE) i nazwa IR (current_ir.txt);
+                                   podczas nagrywania: tryb + REC z migającą kropką + mm:ss
+[[#########.........:.....]]       szczyt wejścia (pasek -60..0 dBFS, kreska przy -12 dB, ramka 2 px)
+[[##############....:.....]]       szczyt wyjścia (przesterowany miernik jest odwrócony)
 ```
 
 ```

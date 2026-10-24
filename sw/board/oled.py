@@ -72,20 +72,25 @@ class Canvas:
             x += 6 * scale
         return x
 
-    def hbar(self, x, y, w, h, frac, ticks=()):
-        """Meter bar: outline w x h, filled to frac (0..1); ticks are fractions marked inside."""
+    def hbar(self, x, y, w, h, frac, ticks=(), border=1):
+        """Meter bar: outline w x h (`border` px thick), 1 px gap, then a fill to
+        frac (0..1); ticks are fractions marked as short lines inside."""
         frac = 0.0 if frac < 0 else 1.0 if frac > 1 else frac
-        for xx in range(x, x + w):
-            self.pixel(xx, y)
-            self.pixel(xx, y + h - 1)
-        for yy in range(y, y + h):
-            self.pixel(x, yy)
-            self.pixel(x + w - 1, yy)
-        n = int(round((w - 4) * frac))
-        self.rect(x + 2, y + 2, n, h - 4)
+        for b in range(border):
+            for xx in range(x, x + w):
+                self.pixel(xx, y + b)
+                self.pixel(xx, y + h - 1 - b)
+            for yy in range(y, y + h):
+                self.pixel(x + b, yy)
+                self.pixel(x + w - 1 - b, yy)
+        g = border + 1                                  # border + gap
+        n = int(round((w - 2 * g) * frac))
+        self.rect(x + g, y + g, n, h - 2 * g)
         for t in ticks:
-            tx = x + 2 + int(round((w - 4) * t))
-            self.pixel(tx, y + h // 2, tx >= x + 2 + n)     # dot on the empty part, hole in the fill
+            tx = x + g + int(round((w - 2 * g) * t))
+            on = tx >= x + g + n                        # line on the empty part, gap in the fill
+            for yy in range(y + h // 2 - 1, y + h // 2 + 1):
+                self.pixel(tx, yy, on)
 
     def ascii(self):
         return "\n".join("".join("#" if self.get(x, y) else "." for x in range(self.w))

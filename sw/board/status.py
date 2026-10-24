@@ -10,7 +10,7 @@ import argparse, math, os, signal, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 sys.path.insert(0, "/home/xilinx/cab_conv")
-from oled import SSD1306, Canvas
+from oled import SSD1306, Canvas, W
 from cab_conv import (MMIO_RANGE, REG_ID, ID_VALUE, REG_CTRL, REG_STATUS, REG_CLEAR,
                       REG_PEAK_IN, REG_PEAK_OUT, REG_REC_WPTR)
 
@@ -26,10 +26,6 @@ def db(v):
     return 20 * math.log10(v / FULL) if v else -999.0
 
 
-def fmt_db(d):
-    return " -inf" if d <= -99.5 else "%3ddB" % round(d)
-
-
 def render(s):
     """s: dict(overlay, bypass, mute, rec, rec_s, blink, ir, in_db, out_db, in_clip, out_clip)
     -> Canvas."""
@@ -37,23 +33,25 @@ def render(s):
     if not s["overlay"]:
         c.text(6, 9, "no overlay", scale=2)
         return c
+    # one text line: mode + IR name, or mode + REC timer while recording
     mode = "BYPASS" if s["bypass"] else "CAB"
     if s["mute"]:
         mode += " MUTE"
-    c.text(0, 0, mode)
     if s["rec"]:
         m, sec = divmod(int(s["rec_s"]), 60)
+        c.text(0, 0, mode)
         c.text(74, 0, "REC")
         if s["blink"]:
             c.rect(94, 2, 4, 4)
         c.text(100, 0, "%02d:%02d" % (min(m, 99), sec))
-    c.text(0, 8, s["ir"][:21])
-    for y, lab, d, clip in ((16, "IN", s["in_db"], s["in_clip"]), (24, "OT", s["out_db"], s["out_clip"])):
-        c.text(0, y, lab)
+    else:
+        c.text(0, 0, (mode + " " + s["ir"])[:21])
+    # two 11 px meters (input above output, 2 px apart), 2 px border, -60..0 dBFS, tick at -12 dB;
+    # a clipping channel's meter is shown inverted
+    for y, d, clip in ((8, s["in_db"], s["in_clip"]), (21, s["out_db"], s["out_clip"])):
+        c.hbar(0, y, W, 11, (d - DB_MIN) / -DB_MIN, ticks=((-12 - DB_MIN) / -DB_MIN,), border=2)
         if clip:
-            c.invert(0, y - 1, 12, 9)
-        c.hbar(14, y, 78, 7, (d - DB_MIN) / -DB_MIN, ticks=((-12 - DB_MIN) / -DB_MIN,))
-        c.text(96, y, fmt_db(d))
+            c.invert(0, y, W, 11)
     return c
 
 
