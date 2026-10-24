@@ -15,11 +15,15 @@ set_property -dict {PACKAGE_PIN F17 IOSTANDARD LVCMOS33} [get_ports sdata_i]
 set_property -dict {PACKAGE_PIN M17 IOSTANDARD LVCMOS33} [get_ports {codec_addr[0]}]
 set_property -dict {PACKAGE_PIN M18 IOSTANDARD LVCMOS33} [get_ports {codec_addr[1]}]
 
+## record button (BTN0) and record LED (LED0)
+set_property -dict {PACKAGE_PIN D19 IOSTANDARD LVCMOS33} [get_ports btn_rec]
+set_property -dict {PACKAGE_PIN R14 IOSTANDARD LVCMOS33} [get_ports led_rec]
+
 ## I2S runs at 3.072 MHz BCLK generated synchronously from the 122.88 MHz
 ## fabric clock; launch/capture points are chosen in RTL with >100 ns of
 ## margin, so the pins only need to be kept out of timing analysis.
-set_false_path -to   [get_ports {mclk bclk lrclk sdata_o codec_addr[*]}]
-set_false_path -from [get_ports sdata_i]
+set_false_path -to   [get_ports {mclk bclk lrclk sdata_o codec_addr[*] led_rec}]
+set_false_path -from [get_ports {sdata_i btn_rec}]
 
 ## pack I2S output flops into the IOBs for clean edges
 set_property IOB TRUE [get_ports {bclk lrclk sdata_o}]

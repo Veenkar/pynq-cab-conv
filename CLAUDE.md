@@ -10,11 +10,12 @@ This file is for working on the code.
 
 ## Status
 - RTL verified bit-exact in Icarus simulation (small and full 8192-tap config both PASS).
-- `vivado/build.tcl` builds cleanly in Vivado 2026.1: timing met (WNS +1.4 ns @ 122.88 MHz),
-  4 DSP, 14 BRAM tiles, ~2% LUT; no critical warnings.
+- `vivado/build.tcl` builds cleanly in Vivado 2026.1: timing met (WNS +1.27 ns @ 122.88 MHz),
+  4 DSP, 26 BRAM tiles (12 of them the capture ring), ~2% LUT; no critical warnings.
 - **Verified on hardware** (PYNQ Linux 3.0): overlay + codec init, bypass, IR load / bank switch,
   real-time convolution. Measured through a Focusrite (sweep-free, riff cross-spectrum): response
   matches the IR within ~0.5 dB 60 Hz–5 kHz, coherence 0.97–1.0, fs offset vs Focusrite ~5–10 ppm.
+- Recording (dry L / wet R WAV via a PL BRAM ring, BTN0/LED0): verified on hardware: 30 s take with 0 frames lost, wet channel bit-exact vs `fir_model(dry)`; BTN0 toggling + LED0 work.
 - PYNQ 3.0: run the driver as root via `sudo -i python3 ...` (login shell sources XRT + venv;
   plain `sudo python3` fails with "No Devices Found"). `import pynq` takes ~10 s on the board.
 - Each `CabConv(...)` with `download=True` reloads the bitstream and wipes the IR; use
@@ -40,10 +41,12 @@ sim/run_sim.py       stimulus gen, runs iverilog/vvp, bit-exact check vs Python 
 vivado/build.tcl     project + block design + bitstream, copies .bit/.hwh to build/
 vivado/ps7_pynq_z2.tcl  full PS7 config (DDR/MIO) from PYNQ v2.7 base overlay (BSD-3) – no board files needed
 vivado/pynq_z2_audio.xdc codec pins
-sw/cab_conv.py       PYNQ driver: overlay, codec over /dev/i2c-*, IR prep/quantize, bit-exact model
+sw/cab_conv.py       PYNQ driver: overlay, codec over /dev/i2c-*, IR prep/quantize, bit-exact model,
+                     CaptureMixin (rec_start/rec_stop/recording/read_capture)
 sw/example.py        usage example
 sw/board/            helper scripts used on the board in ~xilinx/cab_conv/ (run with sudo -i):
                      load_cab.py (overlay + IR), load_ir.py (IR only), meter.py (live levels), ctl.py (mute/HP vol),
+                     record.py + record.service (dry/wet WAV recorder, `install_autostart.sh --rec`),
                      autostart.py + cab-conv.service (boot start, After=bootpy.service which loads base.bit),
                      install_autostart.sh [--fast|--restore] (installs the unit; --fast trims /boot/boot.py and
                      disables jupyter + clear_pl_statefile, which has Requires=jupyter)
@@ -55,6 +58,11 @@ python3 sim/run_sim.py                 # 4 lanes x 64 taps, HALF=10, ~10 s
 python3 sim/run_sim.py --full          # 4 x 2048 taps, HALF=20, ~5 min (>8192 samples)
 vivado -mode batch -source vivado/build.tcl -tclargs <jobs>   # -> build/cab_conv.{bit,hwh}
 ```
+**Python: use the repo venv `.venv`** (created from the Python on PATH by `setup_venv.bat` /
+`setup_venv.sh`, `--reinstall` to rebuild; deps in `requirements.txt`; don't force pyenv, conda or
+the global interpreter). Run PC-side Python with `.venv/Scripts/python.exe` (Windows) or
+`.venv/bin/python`; repo scripts should re-exec into `.venv` when it exists, like `run_sim.py`.
+New PC-side deps go into `requirements.txt`. Board scripts use the PYNQ image's Python.
 Sim needs `iverilog`, `numpy`, `scipy`. Compile flags used: `-g2005 -DSIMULATION -DNLANE= -DLW= -DHALF=`.
 `sim/work*/` are generated outputs, don't commit them.
 
@@ -81,6 +89,9 @@ Sim needs `iverilog`, `numpy`, `scipy`. Compile flags used: `-g2005 -DSIMULATION
 
 ## Register map
 Documented at the top of `rtl/cab_conv_top.v` and in README.md / README_PL.md. Coefs at `0x8000 + 4*i`, write-only.
+AXI window is 128 KiB. Recording: `CTRL[6]` REC (RW, BTN0 toggles, LED0 follows), `0x28` REC_WPTR (RO, frames since
+REC rose), `0x10000 + 4*i` CAPTURE ring (RO, 8192 frames, word 2k = dry x, 2k+1 = wet y, sign-extended 24-bit).
+`record.py` attaches by raw MMIO (no CabConv, codec not reconfigured) and writes `~xilinx/cab_conv/rec/*.wav`.
 If you change the map, update RTL header, both README tables, `sw/cab_conv.py` constants and the testbench together.
 
 ## Board / codec facts (verified against PYNQ v2.7 sources)

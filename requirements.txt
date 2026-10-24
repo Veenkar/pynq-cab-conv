@@ -1,0 +1,5 @@
+# PC-side Python dependencies (simulation check, IR preparation / model).
+# Install into .venv with setup_venv.bat (Windows) or ./setup_venv.sh (Linux/macOS).
+# The board scripts in sw/board/ use the PYNQ image's own Python, not this file.
+numpy
+scipy

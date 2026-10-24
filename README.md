@@ -15,7 +15,7 @@ No algorithmic latency: output sample `y[n]` already uses `x[n]`.
 | Arithmetic | 24-bit samples, 18-bit coefficients, 48-bit accumulator (DSP48) |
 | Digital latency | 2 samples (41.7 µs), plus the codec's ADC/DAC filters |
 | IR change | two coefficient banks, click-free switching |
-| Resources | 4 DSP48, 14 BRAM tiles, ~2% LUT of the Z-7020; timing met at 122.88 MHz |
+| Resources | 4 DSP48, 26 BRAM tiles (12 for the recording ring), ~2% LUT of the Z-7020; timing met at 122.88 MHz |
 
 Status: verified bit-exact in simulation, builds cleanly in Vivado 2026.1 and
 runs on the board (PYNQ Linux 3.0). Measured through an audio interface, the
@@ -39,7 +39,7 @@ vivado/
 sw/
   cab_conv.py       driver: overlay, codec over I2C, IR loading, model
   example.py        usage example
-  board/            helper scripts for the board (load, meter, control)
+  board/            helper scripts for the board (load, meter, control, record)
 ```
 
 ## How it works
@@ -84,7 +84,17 @@ Both pass bit-exact (`RESULT: PASS`). `--full` confirms that at 122.88 MHz the
 engine fits the per-sample budget (no overrun flag) and that sample hand-over
 works across all four lanes.
 
-Requires `iverilog`, `numpy` and `scipy`.
+Requires `iverilog` (Icarus) plus `numpy` and `scipy` from `requirements.txt`.
+Set up a local venv from the Python on PATH once; `run_sim.py` re-runs itself
+inside `.venv` when it exists:
+
+```
+.\setup_venv.bat               # Windows (--reinstall after a Python upgrade)
+./setup_venv.sh                # Linux / macOS
+```
+
+The scripts also recreate `.venv` on their own when the Python version on PATH
+has changed.
 
 ## Building the bitstream
 
@@ -124,6 +134,7 @@ sudo -i python3 ~xilinx/cab_conv/load_cab.py       # overlay + codec + cab.wav
 sudo -i python3 ~xilinx/cab_conv/load_ir.py ir.wav 3  # change IR (+3 dB), overlay stays
 sudo -i python3 ~xilinx/cab_conv/meter.py          # live meters, Ctrl+C to stop
 sudo -i python3 ~xilinx/cab_conv/ctl.py hp -6      # headphone volume / fpga_mute 0|1
+sudo -i python3 ~xilinx/cab_conv/record.py --once  # record one take (see Recording)
 ```
 
 To start the convolver automatically at boot, run the install script from
@@ -135,6 +146,7 @@ To start the convolver automatically at boot, run the install script from
 cd ~xilinx/cab_conv
 sudo ./install_autostart.sh            # autostart only (IR ready ~160 s after power-on)
 sudo ./install_autostart.sh --fast     # + faster boot (IR ready ~85 s)
+sudo ./install_autostart.sh --rec      # + record.service (BTN0 recorder); combine: --fast --rec
 sudo ./install_autostart.sh --restore  # undo everything, back to PYNQ defaults
 ```
 
@@ -194,13 +206,13 @@ Practical notes from testing with an audio interface:
   around −12 dBFS. The remaining noise floor comes from the board's analog
   output, so a louder digital output gives a better signal-to-noise ratio.
 
-## Register map (AXI4-Lite, 64 KiB, 0x43C00000)
+## Register map (AXI4-Lite, 128 KiB, 0x43C00000)
 
 | Offset | Name | Description |
 |---|---|---|
 | 0x0000 | ID | `0x43414256` ("CABV") |
 | 0x0004 | PARAMS | [15:0] number of taps, [23:16] log2 taps per lane, [31:24] lanes |
-| 0x0008 | CTRL | [0] bypass, [1] mute, [3:2] input (0 L, 1 R, 2 (L+R)/2), [4] bank, [5] wet on L only |
+| 0x0008 | CTRL | [0] bypass, [1] mute, [3:2] input (0 L, 1 R, 2 (L+R)/2), [4] bank, [5] wet on L only, [6] REC (recording; BTN0 toggles it) |
 | 0x000C | STATUS | [0] active bank, [1] input clip, [2] output clip, [3] overrun |
 | 0x0010 | SHIFT0 | shift for bank 0 |
 | 0x0014 | SHIFT1 | shift for bank 1 |
@@ -208,7 +220,39 @@ Practical notes from testing with an audio interface:
 | 0x001C | SAMPLES | sample counter |
 | 0x0020 | PEAK_IN | max \|x\| since the last CLEAR |
 | 0x0024 | PEAK_OUT | max \|y\| since the last CLEAR |
+| 0x0028 | REC_WPTR | frames written since REC last went high (read-only, 32-bit, reset on the rising edge of REC) |
 | 0x8000 + 4i | COEF[i] | tap i (18-bit signed), written to the inactive bank |
+| 0x10000 + 4i | CAPTURE[i] | read-only ring of 8192 frames (170.7 ms); word 2k = dry x, 2k+1 = wet y of frame k, 24-bit signed, sign-extended to 32 bits; frame n is stored at k = n mod 8192 |
+
+## Recording
+
+The board can record the dry input (left channel of the WAV) and the
+convolved output (right channel) as a stereo 24-bit 48 kHz WAV on the SD card,
+for example to compare or re-process a take offline. No DMA is involved: the PL
+writes both signals into a ring buffer of 8192 frames (170.7 ms) while `CTRL[6]`
+(REC) is set, and the PS drains it over the AXI4-Lite link
+(`CabConv.read_capture`). Dry is the engine input after the input select, wet
+is the engine output (before bypass/mute), and both are aligned to the same
+sample index, so `wet = IR * dry` holds exactly for the file.
+
+REC is switched by software (`cab.rec_start()` / `cab.rec_stop()`, or the
+`--start` option of `record.py`) or by a press of **BTN0** (debounced, toggles).
+**LED0** follows REC. The PS reads the ring about every 20 ms, so the ring only
+overflows if the process is starved for more than ~170 ms; an overflow is
+reported and the lost frames are filled with zeros.
+
+```
+sudo -i python3 ~xilinx/cab_conv/record.py              # daemon: one WAV per REC period
+sudo -i python3 ~xilinx/cab_conv/record.py --once       # wait for REC, record one take, exit
+sudo -i python3 ~xilinx/cab_conv/record.py --once --start   # start now, stop with BTN0 or Ctrl+C
+sudo -i python3 ~xilinx/cab_conv/record.py --dir /media/usb # other target directory
+```
+
+Files are named `rec_YYYYmmdd_HHMMSS.wav` in `~xilinx/cab_conv/rec/` and are
+written incrementally; the header is patched every 2 s, so a power cut loses
+at most the last couple of seconds. For a permanent setup, `install_autostart.sh
+--rec` installs `record.service` (after `cab-conv.service`), and then BTN0 starts
+and stops a take at any time. A 24-bit stereo take is about 17 MB per minute.
 
 ## Extensions
 
@@ -216,7 +260,8 @@ Practical notes from testing with an audio interface:
   for 4 more DSPs and about 14 more BRAM tiles. The lane length (`LW = 11`)
   is already close to the 2560-cycle-per-sample limit. The register map also
   has to change: the coefficient window at `0x8000` only has room for 8192
-  taps within the 64 KiB address range.
+  taps within the 0x8000-0xFFFF address range (the AXI window is now 128 KiB, but
+  the capture ring sits at `0x10000`).
 - **Two IRs at once** (e.g. two mics or stereo): a second `fir_engine` with
   its own coefficients for the right channel.
 - **Higher fs:** 96 kHz needs a 245.76 MHz clock, or twice as many lanes for

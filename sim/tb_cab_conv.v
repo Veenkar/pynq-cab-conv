@@ -7,6 +7,8 @@
 //   reset -> F0 frames with power-on IR (bank 0 = unity)
 //   load IR A into bank 1, switch            -> F1 frames
 //   load IR B into bank 0, switch mid-stream -> F2 frames
+//   record into the capture ring (wraps), stop, dump ring to cap.txt
+//   record button: glitch, bouncing press / release x2, led_rec check
 //   bypass on                                -> F3 frames
 //   mute on                                  -> until input runs out
 
@@ -23,10 +25,19 @@ module tb_cab_conv;
 `ifndef HALF
 `define HALF 10
 `endif
+`ifndef CAP_LOG2
+`define CAP_LOG2 5
+`endif
+`ifndef DEB_BITS
+`define DEB_BITS 4
+`endif
 
     localparam NLANE = `NLANE;
     localparam LW    = `LW;
     localparam HALF  = `HALF;
+    localparam CAP_LOG2 = `CAP_LOG2;
+    localparam CAPN  = 1 << CAP_LOG2;       // frames in the capture ring
+    localparam DEB_BITS = `DEB_BITS;
     localparam NTAPS = NLANE << LW;
     localparam MAXN  = 65536;
 
@@ -35,17 +46,20 @@ module tb_cab_conv;
     reg aresetn = 0;
 
     // AXI
-    reg  [15:0] awaddr = 0;  reg awvalid = 0; wire awready;
+    reg  [16:0] awaddr = 0;  reg awvalid = 0; wire awready;
     reg  [31:0] wdata = 0;   reg wvalid = 0;  wire wready;
     wire [1:0]  bresp;       wire bvalid;     reg bready = 0;
-    reg  [15:0] araddr = 0;  reg arvalid = 0; wire arready;
+    reg  [16:0] araddr = 0;  reg arvalid = 0; wire arready;
     wire [31:0] rdata;       wire [1:0] rresp; wire rvalid; reg rready = 0;
 
     wire mclk, bclk, lrclk, sdata_o;
     reg  sdata_i = 0;
     wire [1:0] codec_addr;
+    reg  btn_rec = 0;
+    wire led_rec;
 
-    cab_conv_top #(.NLANE(NLANE), .LW(LW), .HALF(HALF)) dut (
+    cab_conv_top #(.NLANE(NLANE), .LW(LW), .HALF(HALF),
+                   .CAP_LOG2(CAP_LOG2), .DEB_BITS(DEB_BITS)) dut (
         .aclk(aclk), .aresetn(aresetn),
         .s_axi_awaddr(awaddr), .s_axi_awprot(3'b000), .s_axi_awvalid(awvalid),
         .s_axi_awready(awready),
@@ -57,13 +71,14 @@ module tb_cab_conv;
         .s_axi_rdata(rdata), .s_axi_rresp(rresp), .s_axi_rvalid(rvalid),
         .s_axi_rready(rready),
         .mclk(mclk), .bclk(bclk), .lrclk(lrclk), .sdata_o(sdata_o),
-        .sdata_i(sdata_i), .codec_addr(codec_addr)
+        .sdata_i(sdata_i), .codec_addr(codec_addr),
+        .btn_rec(btn_rec), .led_rec(led_rec)
     );
 
     // ------------------------------------------------------------------
     // AXI BFM
     // ------------------------------------------------------------------
-    task axi_write(input [15:0] a, input [31:0] d);
+    task axi_write(input [16:0] a, input [31:0] d);
         begin
             @(posedge aclk);
             awaddr <= a; wdata <= d; awvalid <= 1; wvalid <= 1;
@@ -76,7 +91,7 @@ module tb_cab_conv;
         end
     endtask
 
-    task axi_read(input [15:0] a, output [31:0] d);
+    task axi_read(input [16:0] a, output [31:0] d);
         begin
             @(posedge aclk);
             araddr <= a; arvalid <= 1;
@@ -175,6 +190,34 @@ module tb_cab_conv;
         end
     endtask
 
+    // drive the record button for n aclk cycles
+    task btn(input v, input integer n);
+        begin
+            btn_rec <= v;
+            repeat (n) @(posedge aclk);
+        end
+    endtask
+
+    // press / release with contact bounce; every bounce is < 2^DEB_BITS cycles
+    task btn_bounce(input v);
+        begin
+            btn(v, 3);   btn(!v, 2);  btn(v, 4);  btn(!v, 3);
+            btn(v, 2);   btn(!v, 5);  btn(v, 3);
+            btn(v, 4 * (1 << DEB_BITS));            // stable
+        end
+    endtask
+
+    integer fcap, wp0, wp1, nrec;
+    task check_led(input exp, input [255:0] what);
+        begin
+            axi_read(17'h0008, r);
+            if (led_rec !== exp || r[6] !== exp) begin
+                $display("FAIL: %0s (led=%b ctrl6=%b, expected %b)",
+                         what, led_rec, r[6], exp);
+            end
+        end
+    endtask
+
     initial begin
         if (!$value$plusargs("NIN=%d", nin)) nin = 1000;
         if (!$value$plusargs("SHA=%d", sha)) sha = 16;
@@ -219,6 +262,61 @@ module tb_cab_conv;
         axi_write(16'h0008, 32'h00);
         wait_bank(0);
         $display("[%0d] bank 0 active", fidx);
+        wait_frames(10);
+
+        // ---- record: set REC via AXI, run past the ring size, stop ----
+        $display("[%0d] REC on", fidx);
+        axi_write(17'h0008, 32'h40);
+        check_led(1'b1, "led_rec after REC set");
+        nrec = 3 * CAPN + 7;
+        wait_frames(nrec);
+        axi_write(17'h0008, 32'h00);
+        check_led(1'b0, "led_rec after REC clear");
+        axi_read(17'h0028, r);
+        wp0 = r;
+        axi_read(17'h0028, r);
+        $display("[%0d] REC off, REC_WPTR = %0d (ring %0d)", fidx, wp0, CAPN);
+        if (r !== wp0 || wp0 < nrec - 2 || wp0 > nrec + 8)
+            $display("FAIL: REC_WPTR %0d / %0d", wp0, r);
+        // dump: wptr, then {x, y} for every ring frame
+        fcap = $fopen("cap.txt", "w");
+        $fdisplay(fcap, "%0d", wp0);
+        for (i = 0; i < CAPN; i = i + 1) begin
+            axi_read(17'h10000 + 8*i, r);   $fwrite(fcap, "%0d ", $signed(r));
+            axi_read(17'h10000 + 8*i + 4, r); $fdisplay(fcap, "%0d", $signed(r));
+        end
+        $fclose(fcap);
+        axi_read(17'h0028, r);
+        if (r !== wp0) $display("FAIL: REC_WPTR moved while REC=0");
+
+        // ---- record button: a short glitch must be ignored ----
+        $display("[%0d] button test", fidx);
+        btn(1, 5);  btn(0, 3 * (1 << DEB_BITS));
+        check_led(1'b0, "led_rec after glitch");
+        // bouncing press toggles REC on
+        btn_bounce(1'b1);
+        check_led(1'b1, "led_rec after press 1");
+        wait_frames(20);
+        axi_read(17'h0028, r);
+        if (r < 15 || r > 25) $display("FAIL: REC_WPTR after button start = %0d", r);
+        // bouncing release does not toggle
+        btn_bounce(1'b0);
+        check_led(1'b1, "led_rec after release 1");
+        // second press toggles REC off
+        btn_bounce(1'b1);
+        check_led(1'b0, "led_rec after press 2");
+        btn_bounce(1'b0);
+        check_led(1'b0, "led_rec after release 2");
+        axi_read(17'h0028, r);  wp1 = r;
+        wait_frames(5);
+        axi_read(17'h0028, r);
+        if (r !== wp1) $display("FAIL: REC_WPTR moved while REC=0 (button)");
+        // AXI set/clear still works after button use
+        axi_write(17'h0008, 32'h40);
+        check_led(1'b1, "led_rec after AXI set (2)");
+        axi_write(17'h0008, 32'h00);
+        check_led(1'b0, "led_rec after AXI clear (2)");
+
         wait_frames(f2);
 
         axi_read(16'h000C, r);

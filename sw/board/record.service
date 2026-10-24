@@ -1,0 +1,17 @@
+# systemd unit: recorder daemon (dry L / wet R to WAV on REC, BTN0 toggles).
+# Install: sudo ./install_autostart.sh --rec
+# Takes are written to /home/xilinx/cab_conv/rec/.
+[Unit]
+Description=Cab convolver recorder (BTN0 / CTRL[6] -> WAV)
+After=cab-conv.service
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -lc "exec python3 -u /home/xilinx/cab_conv/record.py --dir /home/xilinx/cab_conv/rec"
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

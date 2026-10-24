@@ -94,11 +94,15 @@ create_bd_port -dir I sdata_i
 connect_bd_net [get_bd_ports sdata_i] [get_bd_pins cab_conv/sdata_i]
 create_bd_port -dir O -from 1 -to 0 codec_addr
 connect_bd_net [get_bd_ports codec_addr] [get_bd_pins cab_conv/codec_addr]
+create_bd_port -dir I btn_rec
+connect_bd_net [get_bd_ports btn_rec] [get_bd_pins cab_conv/btn_rec]
+create_bd_port -dir O led_rec
+connect_bd_net [get_bd_ports led_rec] [get_bd_pins cab_conv/led_rec]
 
-# address map: 64 KiB at 0x43C00000
+# address map: 128 KiB at 0x43C00000
 assign_bd_address
 foreach seg [get_bd_addr_segs -of_objects [get_bd_addr_spaces ps7/Data]] {
-    set_property range 64K $seg
+    set_property range 128K $seg
     set_property offset 0x43C00000 $seg
 }
 

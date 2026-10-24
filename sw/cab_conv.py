@@ -33,7 +33,13 @@ YMIN = -(1 << (DW - 1))
 REG_ID, REG_PARAMS, REG_CTRL, REG_STATUS = 0x00, 0x04, 0x08, 0x0C
 REG_SHIFT0, REG_SHIFT1, REG_CLEAR, REG_SAMPLES = 0x10, 0x14, 0x18, 0x1C
 REG_PEAK_IN, REG_PEAK_OUT = 0x20, 0x24
+REG_REC_WPTR = 0x28
+REC_WPTR = REG_REC_WPTR
+CTRL_REC = 1 << 6               # CTRL[6]: recording (also toggled by BTN0)
 COEF_BASE = 0x8000
+CAP_BASE = 0x10000              # capture ring: word 2k = dry x, 2k+1 = wet y
+CAP_FRAMES = 8192
+MMIO_RANGE = 0x20000            # 128 KiB AXI window
 ID_VALUE = 0x43414256
 
 INPUT_SEL = {"left": 0, "right": 1, "mix": 2}
@@ -263,16 +269,88 @@ class ADAU1761:
 
 
 # ----------------------------------------------------------------------
+# Capture ring (dry/wet recording); needs only an MMIO-like object
+# ----------------------------------------------------------------------
+class CaptureOverflow(RuntimeError):
+    """The reader fell more than CAP_FRAMES behind the writer.
+    .wptr is the writer position, .lost the number of frames that were
+    overwritten (already counted from the requested rptr)."""
+
+    def __init__(self, wptr, lost):
+        RuntimeError.__init__(self, "capture overflow: %d frames lost" % lost)
+        self.wptr, self.lost = wptr, lost
+
+
+class CaptureMixin:
+    """Recording control + capture ring readout. Requires self.mmio."""
+
+    def _rec_ctrl(self):
+        return self.mmio.read(REG_CTRL)
+
+    def rec_start(self):
+        self.mmio.write(REG_CTRL, self._rec_ctrl() | CTRL_REC)
+
+    def rec_stop(self):
+        self.mmio.write(REG_CTRL, self._rec_ctrl() & ~CTRL_REC)
+
+    @property
+    def recording(self):
+        return bool(self._rec_ctrl() & CTRL_REC)
+
+    def rec_wptr(self):
+        """Frames written since recording last started (32-bit)."""
+        return self.mmio.read(REG_REC_WPTR)
+
+    def _cap_copy(self, k0, n):
+        """Copy n frames starting at ring slot k0 (no wrap) -> int32 (n, 2)."""
+        w0 = CAP_BASE // 4 + 2 * k0
+        arr = getattr(self.mmio, "array", None)
+        if arr is not None:
+            raw = np.array(arr[w0:w0 + 2 * n], dtype=np.uint32)   # copy
+        else:
+            raw = np.array([self.mmio.read(CAP_BASE + 4 * (2 * k0 + i))
+                            for i in range(2 * n)], dtype=np.uint32)
+        return raw.view(np.int32).reshape(n, 2)
+
+    def read_capture(self, rptr):
+        """Read frames rptr..wptr from the capture ring.
+
+        Returns (new_rptr, int32 array (n, 2)); column 0 = dry, 1 = wet,
+        sign-extended 24-bit values. rptr counts frames since REC started.
+        Raises CaptureOverflow if more than CAP_FRAMES frames accumulated
+        (or were overwritten while reading); resync with e.wptr.
+        """
+        wptr = self.rec_wptr()
+        n = (wptr - rptr) & 0xFFFFFFFF
+        if n > CAP_FRAMES:
+            raise CaptureOverflow(wptr, n - CAP_FRAMES)
+        if n == 0:
+            return rptr, np.zeros((0, 2), dtype=np.int32)
+        k0 = rptr % CAP_FRAMES
+        n1 = min(n, CAP_FRAMES - k0)
+        parts = [self._cap_copy(k0, n1)]
+        if n > n1:
+            parts.append(self._cap_copy(0, n - n1))
+        data = parts[0] if len(parts) == 1 else np.concatenate(parts)
+        # frames may have been overwritten while we were copying
+        w2 = self.rec_wptr()
+        over = ((w2 - rptr) & 0xFFFFFFFF) - CAP_FRAMES
+        if over > 0:
+            raise CaptureOverflow(w2, over)
+        return (rptr + n) & 0xFFFFFFFF, data
+
+
+# ----------------------------------------------------------------------
 # Overlay driver
 # ----------------------------------------------------------------------
-class CabConv:
+class CabConv(CaptureMixin):
     def __init__(self, bitfile="cab_conv.bit", fs=48000, aux_gain_db=0,
                  hp_volume_db=0, i2c_bus=None, download=True):
         from pynq import MMIO, Overlay
         self.ol = Overlay(bitfile, download=download)
         name = next(k for k in self.ol.ip_dict if "cab_conv" in k)
         ip = self.ol.ip_dict[name]
-        self.mmio = MMIO(ip["phys_addr"], ip.get("addr_range", 0x10000))
+        self.mmio = MMIO(ip["phys_addr"], max(MMIO_RANGE, ip.get("addr_range", 0)))
         if self.mmio.read(REG_ID) != ID_VALUE:
             raise RuntimeError("cab_conv IP not found (ID=0x%08x)" % self.mmio.read(REG_ID))
         p = self.mmio.read(REG_PARAMS)

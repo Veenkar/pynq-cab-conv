@@ -15,7 +15,7 @@ próbka wyjściowa `y[n]` korzysta już z `x[n]`.
 | Arytmetyka | próbki 24 bit, współczynniki 18 bit, akumulator 48 bit (DSP48) |
 | Opóźnienie cyfrowe | 2 próbki (41,7 µs); do tego filtry ADC/DAC kodeka |
 | Zmiana IR | dwa banki współczynników, przełączanie bez trzasków |
-| Zasoby | 4 DSP48, 14 kafelków BRAM, ok. 2% LUT Z-7020; timing spełniony przy 122,88 MHz |
+| Zasoby | 4 DSP48, 26 kafelków BRAM (12 na bufor nagrywania), ok. 2% LUT Z-7020; timing spełniony przy 122,88 MHz |
 
 Stan: zweryfikowane bit w bit w symulacji, buduje się bez błędów w Vivado 2026.1
 i działa na płytce (PYNQ Linux 3.0). Charakterystyka zmierzona przez interfejs
@@ -39,7 +39,7 @@ vivado/
 sw/
   cab_conv.py       sterownik: overlay, kodek po I2C, ładowanie IR, model
   example.py        przykład użycia
-  board/            skrypty pomocnicze na płytkę (ładowanie, mierniki, sterowanie)
+  board/            skrypty pomocnicze na płytkę (ładowanie, mierniki, sterowanie, nagrywanie)
 ```
 
 ## Jak to działa
@@ -86,7 +86,16 @@ potwierdza, że przy 122,88 MHz silnik mieści się w budżecie próbki
 (brak flagi overrun) i że przekazywanie próbek między wszystkimi czterema
 torami działa.
 
-Wymaga `iverilog`, `numpy` i `scipy`.
+Wymaga `iverilog` (Icarus) oraz `numpy` i `scipy` z `requirements.txt`.
+Raz trzeba założyć lokalny venv z Pythona dostępnego w PATH; `run_sim.py` sam
+uruchamia się ponownie w `.venv`, jeśli ten istnieje:
+
+```
+.\setup_venv.bat               # Windows (--reinstall po zmianie Pythona)
+./setup_venv.sh                # Linux / macOS
+```
+
+Skrypty same odtwarzają `.venv`, gdy wersja Pythona w PATH się zmieniła.
 
 ## Budowanie bitstreamu
 
@@ -126,6 +135,7 @@ sudo -i python3 ~xilinx/cab_conv/load_cab.py       # overlay + kodek + cab.wav
 sudo -i python3 ~xilinx/cab_conv/load_ir.py ir.wav 3  # zmiana IR (+3 dB), overlay zostaje
 sudo -i python3 ~xilinx/cab_conv/meter.py          # mierniki na żywo, Ctrl+C kończy
 sudo -i python3 ~xilinx/cab_conv/ctl.py hp -6      # głośność słuchawek / fpga_mute 0|1
+sudo -i python3 ~xilinx/cab_conv/record.py --once  # nagraj jedno ujęcie (patrz Nagrywanie)
 ```
 
 Żeby konwolwer startował sam po włączeniu płytki, uruchom na płytce skrypt
@@ -137,6 +147,7 @@ w `ExecStart` w `/etc/systemd/system/cab-conv.service`.
 cd ~xilinx/cab_conv
 sudo ./install_autostart.sh            # sam autostart (IR gotowa ok. 160 s po włączeniu)
 sudo ./install_autostart.sh --fast     # + szybszy start (IR gotowa ok. 85 s)
+sudo ./install_autostart.sh --rec      # + record.service (nagrywanie BTN0); razem: --fast --rec
 sudo ./install_autostart.sh --restore  # cofa wszystko, ustawienia PYNQ jak w obrazie
 ```
 
@@ -196,13 +207,13 @@ Praktyczne uwagi z testów z interfejsem audio:
   miało szczyty ok. −12 dBFS. Pozostały szum pochodzi z analogowego wyjścia
   płytki, więc głośniejsze wyjście cyfrowe daje lepszy stosunek sygnału do szumu.
 
-## Mapa rejestrów (AXI4-Lite, 64 KiB, 0x43C00000)
+## Mapa rejestrów (AXI4-Lite, 128 KiB, 0x43C00000)
 
 | Offset | Nazwa | Opis |
 |---|---|---|
 | 0x0000 | ID | `0x43414256` ("CABV") |
 | 0x0004 | PARAMS | [15:0] liczba tapów, [23:16] log2 tapów na tor, [31:24] tory |
-| 0x0008 | CTRL | [0] bypass, [1] mute, [3:2] wejście (0 L, 1 R, 2 (L+R)/2), [4] bank, [5] mokry tylko na L |
+| 0x0008 | CTRL | [0] bypass, [1] mute, [3:2] wejście (0 L, 1 R, 2 (L+R)/2), [4] bank, [5] mokry tylko na L, [6] REC (nagrywanie; BTN0 przełącza) |
 | 0x000C | STATUS | [0] aktywny bank, [1] przester wejścia, [2] przester wyjścia, [3] overrun |
 | 0x0010 | SHIFT0 | przesunięcie dla banku 0 |
 | 0x0014 | SHIFT1 | przesunięcie dla banku 1 |
@@ -210,15 +221,48 @@ Praktyczne uwagi z testów z interfejsem audio:
 | 0x001C | SAMPLES | licznik próbek |
 | 0x0020 | PEAK_IN | max \|x\| od ostatniego CLEAR |
 | 0x0024 | PEAK_OUT | max \|y\| od ostatniego CLEAR |
+| 0x0028 | REC_WPTR | liczba klatek zapisanych od ostatniego wzrostu REC (tylko odczyt, 32 bity, zerowana zboczem narastającym REC) |
 | 0x8000 + 4i | COEF[i] | tap i (18 bit ze znakiem), zapis do nieaktywnego banku |
+| 0x10000 + 4i | CAPTURE[i] | bufor kołowy 8192 klatek (170,7 ms), tylko odczyt; słowo 2k = suchy x, 2k+1 = mokry y klatki k, 24 bity ze znakiem rozszerzone do 32; klatka n leży pod k = n mod 8192 |
+
+## Nagrywanie
+
+Płytka potrafi nagrać suchy sygnał wejściowy (lewy kanał WAV) i sygnał po
+konwolucji (prawy kanał) jako stereofoniczny plik WAV 24 bit / 48 kHz na karcie
+SD, np. do porównań albo dalszej obróbki offline. Bez DMA: PL zapisuje oba
+sygnały do bufora kołowego 8192 klatek (170,7 ms), dopóki ustawiony jest
+`CTRL[6]` (REC), a PS opróżnia go przez łącze AXI4-Lite
+(`CabConv.read_capture`). Sygnał suchy to wejście silnika po wyborze wejścia,
+mokry to wyjście silnika (przed bypass/mute); oba są zgrane na ten sam numer
+próbki, więc dla pliku zachodzi dokładnie `mokry = IR * suchy`.
+
+REC włącza się programowo (`cab.rec_start()` / `cab.rec_stop()` albo opcja
+`--start` w `record.py`) lub naciśnięciem **BTN0** (z odbijaniem styków,
+przełącza). **LED0** odzwierciedla REC. PS czyta bufor co ok. 20 ms, więc
+przepełnienie grozi dopiero, gdy proces zostanie zagłodzony na ponad ~170 ms;
+przepełnienie jest zgłaszane, a utracone klatki wypełniane zerami.
+
+```
+sudo -i python3 ~xilinx/cab_conv/record.py              # demon: jeden WAV na okres REC
+sudo -i python3 ~xilinx/cab_conv/record.py --once       # czeka na REC, nagrywa jedno ujęcie, kończy
+sudo -i python3 ~xilinx/cab_conv/record.py --once --start   # start od razu, stop BTN0 lub Ctrl+C
+sudo -i python3 ~xilinx/cab_conv/record.py --dir /media/usb # inny katalog docelowy
+```
+
+Pliki nazywają się `rec_YYYYmmdd_HHMMSS.wav` i leżą w `~xilinx/cab_conv/rec/`;
+są zapisywane na bieżąco, a nagłówek jest poprawiany co 2 s, więc po utracie
+zasilania przepada najwyżej kilka ostatnich sekund. Na stałe: `install_autostart.sh
+--rec` instaluje `record.service` (po `cab-conv.service`), a wtedy BTN0 w każdej
+chwili startuje i kończy ujęcie. Stereo 24 bit to ok. 17 MB na minutę.
 
 ## Rozbudowa
 
 - **Dłuższa IR:** `NLANE = 8` w `cab_conv_top.v` daje 16 384 tapów
   (341 ms) kosztem 4 kolejnych DSP i ok. 14 kafelków BRAM. Długość toru
   (`LW = 11`) jest już blisko limitu 2560 cykli na próbkę. Trzeba też zmienić
-  mapę rejestrów: okno współczynników od `0x8000` mieści w 64 KiB tylko
-  8192 tapy.
+  mapę rejestrów: okno współczynników od `0x8000` mieści tylko 8192 tapy
+  w zakresie 0x8000-0xFFFF (okno AXI ma teraz 128 KiB, ale bufor nagrywania
+  leży od `0x10000`).
 - **Dwie IR jednocześnie** (np. dwa mikrofony albo stereo): drugi
   `fir_engine` z osobnymi współczynnikami na prawy kanał.
 - **Wyższe fs:** 96 kHz wymaga zegara 245,76 MHz albo dwa razy więcej torów

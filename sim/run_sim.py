@@ -7,7 +7,9 @@ against the Python model in sw/cab_conv.py.
     python3 sim/run_sim.py --full     # real config: 4 x 2048 taps, 122.88 MHz frame budget
 
 The captured stream must be: unity IR -> IR A -> IR B -> bypass -> mute,
-with every switch landing exactly on a sample boundary.
+with every switch landing exactly on a sample boundary. Also checks the capture
+ring (REC via AXI, ring wraps) bit-exactly against the model and the debounced
+record button / led_rec.
 """
 
 import argparse
@@ -15,10 +17,16 @@ import os
 import subprocess
 import sys
 
-import numpy as np
-
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+
+# prefer the repo venv (setup_venv.bat / setup_venv.sh) when it exists
+_venv = os.path.join(ROOT, ".venv")
+_vpy = os.path.join(_venv, "Scripts", "python.exe") if os.name == "nt" else os.path.join(_venv, "bin", "python")
+if os.path.exists(_vpy) and os.path.normcase(os.path.abspath(sys.prefix)) != os.path.normcase(_venv):
+    sys.exit(subprocess.call([_vpy, os.path.abspath(__file__)] + sys.argv[1:]))
+
+import numpy as np  # noqa: E402
 sys.path.insert(0, os.path.join(ROOT, "sw"))
 import cab_conv as cc  # noqa: E402
 
@@ -60,11 +68,13 @@ def main():
     args = ap.parse_args()
 
     if args.full:
-        nlane, lw, half = 4, 11, 20
+        nlane, lw, half, cap_log2 = 4, 11, 20, 6
         f0, f1, f2, f3, tail = 40, 60, 8400, 30, 30   # B runs > 8192 samples
     else:
-        nlane, lw, half = 4, 6, 10
+        nlane, lw, half, cap_log2 = 4, 6, 10, 5
         f0, f1, f2, f3, tail = 40, 400, 400, 40, 40
+    deb_bits = 4
+    capn = 1 << cap_log2
     ltaps = 1 << lw
     ntaps = nlane * ltaps
     fs = 48000
@@ -81,7 +91,8 @@ def main():
 
     # loading coefficients takes a few frames of simulated time
     load_frames = (ntaps * 6) // (2 * half * 64) + 6
-    nin = f0 + f1 + f2 + f3 + tail + 2 * load_frames + 20
+    rec_frames = 3 * capn + 200          # capture + button test, inside the IR B phase
+    nin = f0 + f1 + f2 + f3 + tail + 2 * load_frames + 20 + rec_frames
     xl = guitar_like(nin, fs, rng, 0.5)
     xr = guitar_like(nin, fs, rng, 0.25)
 
@@ -101,7 +112,8 @@ def main():
     vvp = os.path.join(w, "tb.vvp")
     subprocess.check_call(
         ["iverilog", "-g2005", "-DSIMULATION", "-DNLANE=%d" % nlane,
-         "-DLW=%d" % lw, "-DHALF=%d" % half, "-o", vvp,
+         "-DLW=%d" % lw, "-DHALF=%d" % half,
+         "-DCAP_LOG2=%d" % cap_log2, "-DDEB_BITS=%d" % deb_bits, "-o", vvp,
          os.path.join(HERE, "tb_cab_conv.v")] + rtl)
     print("taps=%d (%d x %d), shift A=%d, shift B=%d, %d frames"
           % (ntaps, nlane, ltaps, sha, shb, nin))
@@ -163,7 +175,27 @@ def main():
     if nb0 and nb1:
         print("IR B segment: %d samples, %d saturated in model"
               % (nb1 - nb0, int(satb[nb0:nb1].sum())))
-    ok = (errors == 0 and names == ["IR A", "IR B", "bypass", "mute"]
+    # ---- capture ring: REC_WPTR, then {x, y} per ring slot ----
+    with open(os.path.join(w, "cap.txt")) as f:
+        wptr = int(f.readline())
+    cap = np.loadtxt(os.path.join(w, "cap.txt"), dtype=np.int64, skiprows=1, ndmin=2)
+    if cap.shape != (capn, 2) or wptr <= capn:
+        sys.exit("FAIL: capture dump (wptr=%d, shape=%s)" % (wptr, cap.shape))
+    # frame n lives in slot n mod capn; unroll the last capn frames in order
+    ns = np.arange(wptr - capn, wptr)
+    cx, cy = cap[ns % capn, 0], cap[ns % capn, 1]
+    # locate the recorded window in the input stream (dry x is the left input)
+    starts = [s for s in range(len(xl) - capn + 1) if np.array_equal(xl[s:s + capn], cx)]
+    cap_ok = len(starts) == 1
+    if cap_ok:
+        s0 = starts[0]
+        cap_ok = np.array_equal(cy, yb[s0:s0 + capn])
+        print("capture: %d frames recorded, ring %d, window = input samples %d..%d, "
+              "x/y bit-exact: %s" % (wptr, capn, s0, s0 + capn - 1, cap_ok))
+    else:
+        print("capture: could not align ring with input (%d matches)" % len(starts))
+
+    ok = (errors == 0 and cap_ok and names == ["IR A", "IR B", "bypass", "mute"]
           and "FAIL" not in log.stdout)
     print("RESULT:", "PASS" if ok else "FAIL (%d errors)" % errors)
     sys.exit(0 if ok else 1)
