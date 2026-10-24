@@ -44,6 +44,10 @@ sw/
 
 ## Jak to działa
 
+Ilustrowany opis (tapy, tory, potok DSP48, budżet cykli i I2S, każdy z
+fragmentem RTL) jest w [`docs/how_it_works.html`](docs/how_it_works.html)
+(po angielsku); pobierz plik i otwórz go w przeglądarce.
+
 **Tor sygnału.** Kodek ADAU1761 na płytce pracuje jako slave. FPGA generuje
 MCLK (12,288 MHz = 256 × fs) oraz BCLK i LRCLK z jednego zegara, więc wszystko
 jest ściśle synchroniczne. Kodek nie używa swojej PLL, dzięki czemu nie ma

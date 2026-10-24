@@ -44,6 +44,11 @@ sw/
 
 ## How it works
 
+An illustrated walk-through (taps, lanes, the DSP48 pipeline, the cycle
+budget and I2S, each with its RTL excerpt) is in
+[`docs/how_it_works.html`](docs/how_it_works.html); download it and open it in
+a browser.
+
 **Signal path.** The ADAU1761 codec on the board runs as a slave. The FPGA
 generates MCLK (12.288 MHz = 256 × fs) as well as BCLK and LRCLK from one
 clock, so everything is strictly synchronous. The codec doesn't use its PLL,

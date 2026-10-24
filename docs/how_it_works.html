@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Inside the Cab Convolver</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column like a datasheet's theory-of-operation chapter; wide figures scroll inside their own frame. */
+:root {
+  --bg: #f4f5f2;
+  --panel: #e9ebe6;
+  --fg: #1b211f;
+  --muted: #59625e;
+  --line: #c9cec7;
+  --accent: #c4501c;      /* Orange-amp orange: the audio signal path */
+  --data: #1f6f78;        /* teal: control / bus traffic from the ARM side */
+  --display: "Barlow Semi Condensed", "Arial Narrow", sans-serif;
+  --body: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131715; --panel: #1c211f; --fg: #e3e7e3; --muted: #9aa49f; --line: #39413d;
+    --accent: #f08a4b; --data: #5cc0c9; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #131715; --panel: #1c211f; --fg: #e3e7e3; --muted: #9aa49f; --line: #39413d;
+  --accent: #f08a4b; --data: #5cc0c9; color-scheme: dark;
+}
+body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.6 var(--body); }
+main {
+  max-width: 920px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 72px;
+  display: grid; gap: 28px;
+}
+header { display: grid; gap: 8px; }
+.eyebrow { font: 500 12px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+h1, h2 { font-family: var(--display); text-wrap: balance; margin: 0; line-height: 1.1; }
+h1 { font-size: clamp(34px, 6vw, 52px); font-weight: 700; }
+h2 { font-size: 28px; font-weight: 600; padding-top: 18px; border-top: 1px solid var(--line); }
+p { margin: 0; max-width: 66ch; }
+.lede { font-size: 19px; color: var(--muted); }
+section { display: grid; gap: 14px; }
+code, .mono { font-family: var(--mono); font-size: .86em; }
+.formula { font: 500 18px/1.4 var(--mono); background: var(--panel); padding: 12px 16px; border-radius: 4px; justify-self: start; max-width: 100%; overflow-x: auto; }
+.note { border-left: 3px solid var(--accent); padding: 4px 0 4px 14px; max-width: 66ch; }
+figure { margin: 0; display: grid; gap: 8px; }
+.frame { overflow-x: auto; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); }
+.frame svg { display: block; width: 100%; min-width: 680px; height: auto; color: var(--fg); }
+figcaption { font-size: 14.5px; color: var(--muted); max-width: 72ch; }
+svg text { font-family: var(--body); font-size: 13px; fill: currentColor; }
+svg .t-s { font-size: 11.5px; fill: var(--muted); }
+svg .t-m { font-family: var(--mono); font-size: 12px; }
+svg .t-h { font-family: var(--display); font-weight: 600; font-size: 15px; }
+svg .box { fill: var(--bg); stroke: currentColor; stroke-width: 1.2; }
+svg .zone { fill: none; stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 5 4; }
+svg .sig { stroke: var(--accent); stroke-width: 2; fill: none; }
+svg .bus { stroke: var(--data); stroke-width: 2; fill: none; }
+svg .wire { stroke: currentColor; stroke-width: 1.3; fill: none; }
+svg .t-acc { fill: var(--accent); }
+svg .t-data { fill: var(--data); }
+.nums { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.num { background: var(--panel); border-radius: 4px; padding: 12px 14px; display: grid; gap: 2px; }
+.num b { font: 600 24px/1.1 var(--display); font-variant-numeric: tabular-nums; }
+.num span { font-size: 14px; color: var(--muted); }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; margin: 0; max-width: 72ch; }
+dt { font: 500 14px/1.6 var(--mono); color: var(--accent); }
+dd { margin: 0; }
+@media (max-width: 520px) { dl { grid-template-columns: 1fr; gap: 2px; } dd { margin-bottom: 10px; } }
+details.code { border: 1px solid var(--line); border-radius: 4px; background: var(--panel); min-width: 0; }
+details.code summary { cursor: pointer; padding: 8px 12px; font-size: 14px; color: var(--muted); }
+details.code summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+details.code summary .mono { color: var(--accent); }
+details.code pre { margin: 0; padding: 12px 14px; overflow-x: auto; border-top: 1px solid var(--line); background: var(--bg); }
+details.code code { font: 13px/1.5 var(--mono); white-space: pre; }
+</style>
+
+</head>
+<body>
+<main>
+<header>
+  <div class="eyebrow">pynq-cab-conv · theory of operation</div>
+  <h1>Inside the Cab Convolver</h1>
+  <p class="lede">How a guitar signal gets through the PYNQ-Z2: what taps and lanes are, what the four DSP slices do every 20.8 µs, and how I2S moves samples between the FPGA and the codec.</p>
+</header>
+
+<section>
+  <h2>The whole path</h2>
+  <p>The codec (ADAU1761) turns the analog amp signal into 24-bit numbers 48 000 times a second and sends them to the FPGA over I2S. The FPGA logic (the PL) convolves each sample with the cabinet's impulse response and sends the result back to the codec's DAC and headphone amp. The ARM cores running Linux (the PS) never touch the audio in real time. They only set registers, load the IR coefficients and read the recording ring.</p>
+  <figure>
+    <div class="frame">
+    <svg viewBox="0 0 900 420" role="img" aria-label="Signal path: amp to codec ADC, over I2S into the FPGA, through input select, FIR engine and bypass/mute, back over I2S to the codec DAC and headphones. The ARM side talks to the FPGA over AXI4-Lite.">
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--accent)"/></marker>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--data)"/></marker>
+        <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker>
+      </defs>
+      <!-- outside world -->
+      <rect class="box" x="20" y="50" width="130" height="44" rx="3"/>
+      <text x="85" y="70" text-anchor="middle">Amp + load box</text>
+      <text x="85" y="86" text-anchor="middle" class="t-s">≤ 1 Vrms at LINE IN</text>
+      <rect class="box" x="20" y="160" width="130" height="44" rx="3"/>
+      <text x="85" y="180" text-anchor="middle">Headphones</text>
+      <text x="85" y="196" text-anchor="middle" class="t-s">or FRFR / mixer</text>
+      <!-- codec -->
+      <rect class="zone" x="185" y="20" width="175" height="300" rx="4"/>
+      <text x="200" y="42" class="t-h">ADAU1761 codec</text>
+      <rect class="box" x="205" y="52" width="135" height="40" rx="3"/>
+      <text x="272" y="77" text-anchor="middle">ADC</text>
+      <rect class="box" x="205" y="162" width="135" height="40" rx="3"/>
+      <text x="272" y="187" text-anchor="middle">DAC + HP amp</text>
+      <text x="272" y="270" text-anchor="middle" class="t-s">I2S slave: follows the</text>
+      <text x="272" y="285" text-anchor="middle" class="t-s">FPGA's clocks</text>
+      <line class="sig" x1="150" y1="72" x2="203" y2="72" marker-end="url(#a1)"/>
+      <line class="sig" x1="205" y1="182" x2="152" y2="182" marker-end="url(#a1)"/>
+      <!-- FPGA PL -->
+      <rect class="zone" x="400" y="20" width="485" height="300" rx="4"/>
+      <text x="415" y="42" class="t-h">FPGA fabric (PL) · 122.88 MHz</text>
+      <rect class="box" x="415" y="52" width="95" height="150" rx="3"/>
+      <text x="462" y="120" text-anchor="middle">I2S</text>
+      <text x="462" y="136" text-anchor="middle">master</text>
+      <line class="sig" x1="340" y1="72" x2="413" y2="72" marker-end="url(#a1)"/>
+      <text x="376" y="64" text-anchor="middle" class="t-s">SDATA in</text>
+      <line class="sig" x1="415" y1="182" x2="342" y2="182" marker-end="url(#a1)"/>
+      <text x="376" y="174" text-anchor="middle" class="t-s">SDATA out</text>
+      <line class="wire" x1="415" y1="127" x2="342" y2="127" marker-end="url(#a3)"/>
+      <text x="376" y="119" text-anchor="middle" class="t-s">MCLK BCLK</text>
+      <text x="376" y="143" text-anchor="middle" class="t-s">LRCLK</text>
+      <rect class="box" x="545" y="52" width="100" height="40" rx="3"/>
+      <text x="595" y="70" text-anchor="middle">input select</text>
+      <text x="595" y="85" text-anchor="middle" class="t-s">L / R / (L+R)/2</text>
+      <rect class="box" x="680" y="52" width="180" height="40" rx="3" style="stroke:var(--accent);stroke-width:2"/>
+      <text x="770" y="70" text-anchor="middle" class="t-acc" style="font-weight:600">FIR engine</text>
+      <text x="770" y="85" text-anchor="middle" class="t-s">4 lanes · 8192 taps</text>
+      <rect class="box" x="680" y="162" width="180" height="40" rx="3"/>
+      <text x="770" y="187" text-anchor="middle">bypass / mute</text>
+      <line class="sig" x1="510" y1="72" x2="543" y2="72" marker-end="url(#a1)"/>
+      <line class="sig" x1="645" y1="72" x2="678" y2="72" marker-end="url(#a1)"/>
+      <line class="sig" x1="770" y1="92" x2="770" y2="160" marker-end="url(#a1)"/>
+      <text x="778" y="130" class="t-s">y[n]</text>
+      <line class="sig" x1="680" y1="182" x2="512" y2="182" marker-end="url(#a1)"/>
+      <rect class="box" x="545" y="250" width="130" height="44" rx="3"/>
+      <text x="610" y="269" text-anchor="middle">registers</text>
+      <text x="610" y="285" text-anchor="middle" class="t-s">CTRL, meters, coefs</text>
+      <rect class="box" x="710" y="250" width="150" height="44" rx="3"/>
+      <text x="785" y="269" text-anchor="middle">capture ring</text>
+      <text x="785" y="285" text-anchor="middle" class="t-s">8192 frames, BRAM</text>
+      <polyline class="sig" points="860,72 875,72 875,272 862,272" marker-end="url(#a1)" style="stroke-dasharray:4 3"/>
+      <text x="868" y="235" text-anchor="end" class="t-s">dry + wet</text>
+      <line class="wire" x1="610" y1="250" x2="610" y2="94" marker-end="url(#a3)" style="stroke-dasharray:3 3"/>
+      <!-- PS -->
+      <rect class="box" x="400" y="356" width="485" height="48" rx="3"/>
+      <text x="415" y="377" class="t-h">ARM Cortex-A9 · Linux (PS)</text>
+      <text x="415" y="394" class="t-s">cab_conv.py loads IRs · record.py writes WAVs to the SD card</text>
+      <line class="bus" x1="610" y1="354" x2="610" y2="296" marker-end="url(#a2)" marker-start="url(#a2)"/>
+      <line class="bus" x1="785" y1="354" x2="785" y2="296" marker-start="url(#a2)"/>
+      <text x="622" y="333" class="t-data t-m">AXI4-Lite (GP0)</text>
+      <text x="797" y="333" class="t-data t-m">reads</text>
+    </svg>
+    </div>
+    <figcaption>Orange is the audio, teal is traffic from Linux. The audio loop never leaves the FPGA and codec, so Linux can be busy or slow without causing a dropout. Total digital latency is 2 samples (41.7 µs) plus the codec's own filters.</figcaption>
+  </figure>
+  <details class="code" open><summary><span class="mono">rtl/cab_conv_top.v</span> · input select feeding the engine</summary><pre><code>wire signed [DW:0] lr_sum = {rx_l[DW-1], rx_l} + {rx_r[DW-1], rx_r};
+reg  signed [DW-1:0] x_sel;
+always @(*) begin
+    case (r_insel)
+    2&#x27;d1:    x_sel = rx_r;
+    2&#x27;d2:    x_sel = lr_sum[DW:1];
+    default: x_sel = rx_l;
+    endcase</code></pre></details>
+  <details class="code" open><summary><span class="mono">rtl/cab_conv_top.v</span> · MCLK = aclk / 10</summary><pre><code>end else if (mdiv == 3&#x27;d4) begin
+    mdiv   &lt;= 3&#x27;d0;
+    mclk_d &lt;= ~mclk_d;
+end else begin
+    mdiv &lt;= mdiv + 1&#x27;b1;</code></pre></details>
+</section>
+
+<section>
+  <h2>What a tap is</h2>
+  <p>An impulse response is a recording of what the cabinet does to a single click. At 48 kHz it is a list of numbers, one every 20.8 µs. Each of those numbers is a <b>tap</b>, also called a coefficient, written <code>h[k]</code>. Convolution makes every output sample a weighted sum of the current input and the inputs before it, with the IR as the weights:</p>
+  <div class="formula">y[n] = h[0]·x[n] + h[1]·x[n−1] + … + h[8191]·x[n−8191]</div>
+  <p>The name comes from the classic drawing of this filter: a chain of one-sample delays (z⁻¹) with a "tap" after each delay, where the signal is picked off, multiplied by its coefficient and added in.</p>
+  <figure>
+    <div class="frame">
+    <svg viewBox="0 0 800 250" role="img" aria-label="Tapped delay line: input passes through a chain of one-sample delays; each tap is multiplied by a coefficient and all products are summed into the output.">
+      <defs>
+        <marker id="b1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker>
+        <marker id="b2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="var(--accent)"/></marker>
+      </defs>
+      <text x="20" y="56" class="t-m">x[n]</text>
+      <line class="wire" x1="58" y1="52" x2="740" y2="52"/>
+      <!-- delays -->
+      <g>
+        <rect class="box" x="140" y="34" width="56" height="36" rx="3"/><text x="168" y="57" text-anchor="middle" class="t-m">z⁻¹</text>
+        <rect class="box" x="280" y="34" width="56" height="36" rx="3"/><text x="308" y="57" text-anchor="middle" class="t-m">z⁻¹</text>
+        <rect class="box" x="420" y="34" width="56" height="36" rx="3"/><text x="448" y="57" text-anchor="middle" class="t-m">z⁻¹</text>
+        <rect class="box" x="560" y="34" width="56" height="36" rx="3"/><text x="588" y="57" text-anchor="middle" class="t-m">z⁻¹</text>
+      </g>
+      <!-- taps -->
+      <g class="t-s">
+        <text x="100" y="24" text-anchor="middle">x[n]</text>
+        <text x="240" y="24" text-anchor="middle">x[n−1]</text>
+        <text x="380" y="24" text-anchor="middle">x[n−2]</text>
+        <text x="520" y="24" text-anchor="middle">x[n−3]</text>
+        <text x="680" y="24" text-anchor="middle">… x[n−8191]</text>
+      </g>
+      <g>
+        <line class="wire" x1="100" y1="52" x2="100" y2="104" marker-end="url(#b1)"/>
+        <line class="wire" x1="240" y1="52" x2="240" y2="104" marker-end="url(#b1)"/>
+        <line class="wire" x1="380" y1="52" x2="380" y2="104" marker-end="url(#b1)"/>
+        <line class="wire" x1="520" y1="52" x2="520" y2="104" marker-end="url(#b1)"/>
+        <line class="wire" x1="680" y1="52" x2="680" y2="104" marker-end="url(#b1)"/>
+        <circle class="box" cx="100" cy="122" r="16"/><text x="100" y="127" text-anchor="middle">×</text>
+        <circle class="box" cx="240" cy="122" r="16"/><text x="240" y="127" text-anchor="middle">×</text>
+        <circle class="box" cx="380" cy="122" r="16"/><text x="380" y="127" text-anchor="middle">×</text>
+        <circle class="box" cx="520" cy="122" r="16"/><text x="520" y="127" text-anchor="middle">×</text>
+        <circle class="box" cx="680" cy="122" r="16"/><text x="680" y="127" text-anchor="middle">×</text>
+        <text x="122" y="118" class="t-m t-acc">h[0]</text>
+        <text x="262" y="118" class="t-m t-acc">h[1]</text>
+        <text x="402" y="118" class="t-m t-acc">h[2]</text>
+        <text x="542" y="118" class="t-m t-acc">h[3]</text>
+        <text x="702" y="118" class="t-m t-acc">h[8191]</text>
+        <line class="wire" x1="100" y1="138" x2="100" y2="190"/>
+        <line class="wire" x1="240" y1="138" x2="240" y2="190"/>
+        <line class="wire" x1="380" y1="138" x2="380" y2="190"/>
+        <line class="wire" x1="520" y1="138" x2="520" y2="190"/>
+        <line class="wire" x1="680" y1="138" x2="680" y2="190"/>
+      </g>
+      <line class="sig" x1="100" y1="190" x2="710" y2="190"/>
+      <circle class="box" cx="728" cy="190" r="16" style="stroke:var(--accent)"/><text x="728" y="195" text-anchor="middle" class="t-acc">Σ</text>
+      <line class="sig" x1="744" y1="190" x2="772" y2="190" marker-end="url(#b2)"/>
+      <text x="728" y="232" text-anchor="middle" class="t-m t-acc">y[n]</text>
+      <text x="400" y="232" text-anchor="middle" class="t-s">8192 multiply-adds for every output sample</text>
+    </svg>
+    </div>
+    <figcaption>Each tap holds one IR sample. 8192 taps × 20.8 µs = 170.7 ms of cabinet response, which covers a cab IR's decay with room to spare (most of the energy is in the first 20–50 ms).</figcaption>
+  </figure>
+  <details class="code" open><summary><span class="mono">sw/cab_conv.py</span> · bit-exact Python model: the same sum, lane by lane</summary><pre><code>for k in range(len(hq) // ltaps):
+    hk = hq[k * ltaps:(k + 1) * ltaps]
+    lane = np.zeros(n, dtype=np.int64)
+    off = k * ltaps
+    if off &lt; n and np.any(hk):
+        lane[off:] = np.convolve(x, hk)[:n - off]
+    total = total + _wrap_arr(lane, AW).astype(object)
+v = np.array([int(t) &gt;&gt; shift for t in total], dtype=object)
+sat = (v &gt; YMAX) | (v &lt; YMIN)
+y = np.clip(v, YMIN, YMAX).astype(np.int64)</code></pre></details>
+  <details class="code" open><summary><span class="mono">rtl/fir_engine.v</span> · one tap per clock: read x[n−j] and h[j]</summary><pre><code>S_MAC: begin
+    // issue tap j: x[n-j] (lane-local) and h[j]
+    dl_raddr &lt;= wp - j[LW-1:0];
+    cf_raddr &lt;= j[LW-1:0];
+    v0       &lt;= 1&#x27;b1;
+    j        &lt;= j + 1&#x27;b1;
+    if (j == LTAPS - 1)
+        state &lt;= S_DRAIN;</code></pre></details>
+</section>
+
+<section>
+  <h2>Why 4 DSP slices (not 8)</h2>
+  <p>The current build uses <b>4</b> DSP48 slices. 8 would be the <code>NLANE = 8</code> extension, which doubles the IR to 16 384 taps. The count follows from the arithmetic: there are 8192 multiply-adds per sample, and one DSP slice does one per clock.</p>
+  <div class="nums">
+    <div class="num"><b>393.2 M</b><span>multiply-adds per second (8192 × 48 kHz)</span></div>
+    <div class="num"><b>122.88 M</b><span>multiply-adds per second per DSP (1 per clock)</span></div>
+    <div class="num"><b>3.2 → 4</b><span>DSP slices needed, rounded up to a power of two</span></div>
+    <div class="num"><b>2560</b><span>clock cycles available per sample</span></div>
+  </div>
+  <p>A <b>DSP48</b> is a hard multiplier-accumulator block in the Zynq fabric (the Z-7020 has 220 of them). One slice multiplies a 24-bit sample by an 18-bit coefficient and adds the product into a 48-bit accumulator, and it can do this every clock cycle because each stage has its own pipeline register:</p>
+  <figure>
+    <div class="frame">
+    <svg viewBox="0 0 800 190" role="img" aria-label="DSP48 pipeline: sample register A and coefficient register B feed a multiplier, its product is registered in M, then added into the accumulator register P, which feeds back into the adder.">
+      <defs><marker id="c1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+      <text x="20" y="52" class="t-s">from delay-line BRAM</text>
+      <text x="20" y="68" class="t-m">x  24 bit</text>
+      <text x="20" y="132" class="t-s">from coefficient BRAM</text>
+      <text x="20" y="148" class="t-m">h  18 bit</text>
+      <rect class="box" x="170" y="40" width="60" height="36" rx="3"/><text x="200" y="63" text-anchor="middle" class="t-m">A reg</text>
+      <rect class="box" x="170" y="120" width="60" height="36" rx="3"/><text x="200" y="143" text-anchor="middle" class="t-m">B reg</text>
+      <line class="wire" x1="140" y1="58" x2="168" y2="58" marker-end="url(#c1)"/>
+      <line class="wire" x1="140" y1="138" x2="168" y2="138" marker-end="url(#c1)"/>
+      <circle class="box" cx="300" cy="98" r="20"/><text x="300" y="103" text-anchor="middle">×</text>
+      <polyline class="wire" points="230,58 260,58 285,86" marker-end="url(#c1)"/>
+      <polyline class="wire" points="230,138 260,138 285,111" marker-end="url(#c1)"/>
+      <rect class="box" x="350" y="80" width="80" height="36" rx="3"/><text x="390" y="103" text-anchor="middle" class="t-m">M reg</text>
+      <text x="390" y="132" text-anchor="middle" class="t-s">42-bit product</text>
+      <line class="wire" x1="320" y1="98" x2="348" y2="98" marker-end="url(#c1)"/>
+      <circle class="box" cx="480" cy="98" r="20"/><text x="480" y="103" text-anchor="middle">+</text>
+      <line class="wire" x1="430" y1="98" x2="458" y2="98" marker-end="url(#c1)"/>
+      <rect class="box" x="530" y="80" width="90" height="36" rx="3" style="stroke:var(--accent);stroke-width:2"/><text x="575" y="103" text-anchor="middle" class="t-m t-acc">P reg</text>
+      <text x="575" y="132" text-anchor="middle" class="t-s">48-bit accumulator</text>
+      <line class="wire" x1="500" y1="98" x2="528" y2="98" marker-end="url(#c1)"/>
+      <polyline class="wire" points="620,98 650,98 650,170 480,170 480,120" marker-end="url(#c1)"/>
+      <text x="565" y="164" text-anchor="middle" class="t-s">P = P + x·h, every clock</text>
+      <line class="wire" x1="650" y1="98" x2="760" y2="98" marker-end="url(#c1)"/>
+      <text x="705" y="88" text-anchor="middle" class="t-s">lane sum after</text>
+      <text x="705" y="120" text-anchor="middle" class="t-s">2048 clocks</text>
+    </svg>
+    </div>
+    <figcaption>The registers let a new pair enter every 8.1 ns clock while earlier pairs are still being multiplied and added. The 48-bit accumulator cannot overflow: the driver scales the IR so that even 2048 full-scale products fit.</figcaption>
+  </figure>
+  <details class="code" open><summary><span class="mono">rtl/fir_engine.v</span> · written so Vivado maps it onto one DSP48 per lane</summary><pre><code>// ---- MAC pipeline: A/B regs -&gt; M reg -&gt; P accumulator (DSP48) ----
+reg signed [DW-1:0]    a_r;
+reg signed [CW-1:0]    b_r;
+reg signed [DW+CW-1:0] m_r;
+reg signed [AW-1:0]    acc;
+
+always @(posedge clk) begin
+    a_r &lt;= dl_rd;
+    b_r &lt;= cf_rd;
+    m_r &lt;= a_r * b_r;
+    if (state == S_RD1)
+        acc &lt;= {AW{1&#x27;b0}};
+    else if (v3)
+        acc &lt;= acc + {{(AW-DW-CW){m_r[DW+CW-1]}}, m_r};
+end
+assign acc_w[k] = acc;</code></pre></details>
+</section>
+
+<section>
+  <h2>Lanes</h2>
+  <p>A <b>lane</b> is one DSP slice plus the memory it reads: a 2048-sample slice of the input history and the matching 2048 coefficients. The 8192 taps are split into four consecutive blocks of 2048 (each block covers 42.7 ms of the IR), and the four lanes work on them at the same time. Each lane steps through its 2048 addresses one per clock. Then the four partial sums are added, shifted and clipped to 24 bits.</p>
+  <figure>
+    <div class="frame">
+    <svg viewBox="0 0 900 400" role="img" aria-label="Four lanes, each with a delay-line BRAM, a coefficient BRAM with two banks and one DSP48. The oldest sample in each lane's delay line moves into the next lane. The four lane sums are added, shifted and saturated to produce y[n].">
+      <defs>
+        <marker id="d1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker>
+        <marker id="d2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="var(--accent)"/></marker>
+      </defs>
+      <text x="20" y="96" class="t-m t-acc">x[n]</text>
+      <line class="sig" x1="20" y1="104" x2="58" y2="104" marker-end="url(#d2)"/>
+      <!-- lane 0..3 at x0 = 60 + 210k -->
+      <g>
+        <rect class="zone" x="60" y="30" width="185" height="250" rx="4"/>
+        <text x="72" y="50" class="t-h">Lane 0</text><text x="233" y="50" text-anchor="end" class="t-s">taps 0–2047</text>
+        <rect class="box" x="72" y="84" width="161" height="42" rx="3"/><text x="152" y="102" text-anchor="middle">delay line</text><text x="152" y="118" text-anchor="middle" class="t-s">x[n] … x[n−2047]</text>
+        <rect class="box" x="72" y="146" width="161" height="42" rx="3"/><text x="152" y="164" text-anchor="middle">coefficients</text><text x="152" y="180" text-anchor="middle" class="t-s">h[0…2047] · 2 banks</text>
+        <rect class="box" x="72" y="214" width="161" height="44" rx="3" style="stroke:var(--accent);stroke-width:2"/><text x="152" y="241" text-anchor="middle" class="t-acc" style="font-weight:600">DSP48 #0</text>
+        <line class="wire" x1="110" y1="126" x2="110" y2="212" marker-end="url(#d1)"/>
+        <line class="wire" x1="195" y1="188" x2="195" y2="212" marker-end="url(#d1)"/>
+      </g>
+      <g>
+        <rect class="zone" x="270" y="30" width="185" height="250" rx="4"/>
+        <text x="282" y="50" class="t-h">Lane 1</text><text x="443" y="50" text-anchor="end" class="t-s">taps 2048–4095</text>
+        <rect class="box" x="282" y="84" width="161" height="42" rx="3"/><text x="362" y="102" text-anchor="middle">delay line</text><text x="362" y="118" text-anchor="middle" class="t-s">x[n−2048] … x[n−4095]</text>
+        <rect class="box" x="282" y="146" width="161" height="42" rx="3"/><text x="362" y="164" text-anchor="middle">coefficients</text><text x="362" y="180" text-anchor="middle" class="t-s">h[2048…4095]</text>
+        <rect class="box" x="282" y="214" width="161" height="44" rx="3" style="stroke:var(--accent);stroke-width:2"/><text x="362" y="241" text-anchor="middle" class="t-acc" style="font-weight:600">DSP48 #1</text>
+        <line class="wire" x1="320" y1="126" x2="320" y2="212" marker-end="url(#d1)"/>
+        <line class="wire" x1="405" y1="188" x2="405" y2="212" marker-end="url(#d1)"/>
+      </g>
+      <g>
+        <rect class="zone" x="480" y="30" width="185" height="250" rx="4"/>
+        <text x="492" y="50" class="t-h">Lane 2</text><text x="653" y="50" text-anchor="end" class="t-s">taps 4096–6143</text>
+        <rect class="box" x="492" y="84" width="161" height="42" rx="3"/><text x="572" y="102" text-anchor="middle">delay line</text><text x="572" y="118" text-anchor="middle" class="t-s">x[n−4096] … x[n−6143]</text>
+        <rect class="box" x="492" y="146" width="161" height="42" rx="3"/><text x="572" y="164" text-anchor="middle">coefficients</text><text x="572" y="180" text-anchor="middle" class="t-s">h[4096…6143]</text>
+        <rect class="box" x="492" y="214" width="161" height="44" rx="3" style="stroke:var(--accent);stroke-width:2"/><text x="572" y="241" text-anchor="middle" class="t-acc" style="font-weight:600">DSP48 #2</text>
+        <line class="wire" x1="530" y1="126" x2="530" y2="212" marker-end="url(#d1)"/>
+        <line class="wire" x1="615" y1="188" x2="615" y2="212" marker-end="url(#d1)"/>
+      </g>
+      <g>
+        <rect class="zone" x="690" y="30" width="185" height="250" rx="4"/>
+        <text x="702" y="50" class="t-h">Lane 3</text><text x="863" y="50" text-anchor="end" class="t-s">taps 6144–8191</text>
+        <rect class="box" x="702" y="84" width="161" height="42" rx="3"/><text x="782" y="102" text-anchor="middle">delay line</text><text x="782" y="118" text-anchor="middle" class="t-s">x[n−6144] … x[n−8191]</text>
+        <rect class="box" x="702" y="146" width="161" height="42" rx="3"/><text x="782" y="164" text-anchor="middle">coefficients</text><text x="782" y="180" text-anchor="middle" class="t-s">h[6144…8191]</text>
+        <rect class="box" x="702" y="214" width="161" height="44" rx="3" style="stroke:var(--accent);stroke-width:2"/><text x="782" y="241" text-anchor="middle" class="t-acc" style="font-weight:600">DSP48 #3</text>
+        <line class="wire" x1="740" y1="126" x2="740" y2="212" marker-end="url(#d1)"/>
+        <line class="wire" x1="825" y1="188" x2="825" y2="212" marker-end="url(#d1)"/>
+      </g>
+      <!-- cascade -->
+      <line class="sig" x1="233" y1="96" x2="280" y2="96" marker-end="url(#d2)"/>
+      <line class="sig" x1="443" y1="96" x2="490" y2="96" marker-end="url(#d2)"/>
+      <line class="sig" x1="653" y1="96" x2="700" y2="96" marker-end="url(#d2)"/>
+      <text x="257" y="76" text-anchor="middle" class="t-s">oldest x</text>
+      <text x="467" y="76" text-anchor="middle" class="t-s">oldest x</text>
+      <text x="677" y="76" text-anchor="middle" class="t-s">oldest x</text>
+      <!-- sum -->
+      <polyline class="wire" points="152,258 152,330 380,330"/>
+      <polyline class="wire" points="362,258 362,312 395,312 395,312"/>
+      <polyline class="wire" points="572,258 572,312 405,312"/>
+      <polyline class="wire" points="782,258 782,330 420,330"/>
+      <circle class="box" cx="400" cy="330" r="18" style="stroke:var(--accent)"/><text x="400" y="335" text-anchor="middle" class="t-acc">Σ</text>
+      <line class="wire" x1="400" y1="312" x2="400" y2="312"/>
+      <line class="sig" x1="400" y1="348" x2="400" y2="362"/>
+      <polyline class="sig" points="400,362 400,372 470,372" marker-end="url(#d2)"/>
+      <rect class="box" x="472" y="352" width="210" height="40" rx="3"/>
+      <text x="577" y="370" text-anchor="middle">≫ shift, saturate</text>
+      <text x="577" y="385" text-anchor="middle" class="t-s">48 bit → 24 bit</text>
+      <line class="sig" x1="682" y1="372" x2="740" y2="372" marker-end="url(#d2)"/>
+      <text x="748" y="377" class="t-m t-acc">y[n]</text>
+    </svg>
+    </div>
+    <figcaption>When a new sample arrives it enters lane 0, and the oldest sample of every lane moves on into the next lane. Each delay line is a circular buffer, so this needs no copying: the hand-over is a single write at the address being read, and all four lanes share one address counter. The 4 delay lines and 8 coefficient blocks take most of the 14 BRAM tiles of the audio path.</figcaption>
+  </figure>
+  <details class="code" open><summary><span class="mono">rtl/fir_engine.v</span> · delay-line cascade: lane k writes lane k−1's oldest sample</summary><pre><code>if (k == 0) begin : g_first
+    assign dl_wd = x_lat;
+end else begin : g_next
+    assign dl_wd = dl_q[k-1];
+end
+
+always @(posedge clk) begin
+    if (dl_we)
+        dl_mem[wp] &lt;= dl_wd;
+    dl_rd &lt;= dl_mem[dl_raddr];
+end
+assign dl_q[k] = dl_rd;</code></pre></details>
+  <details class="code" open><summary><span class="mono">rtl/fir_engine.v</span> · two banks: write the inactive one, read the active one</summary><pre><code>wire cw_hit = cw_en &amp;&amp; (cw_addr[LANE_BITS+LW-1:LW] == k);
+
+always @(posedge clk) begin
+    if (cw_hit)
+        cf_mem[{~bank_act, cw_addr[LW-1:0]}] &lt;= cw_data;
+    cf_rd &lt;= cf_mem[{bank_act, cf_raddr}];</code></pre></details>
+  <p><b>Two coefficient banks.</b> Every lane holds two full sets of coefficients. The driver writes a new IR into the bank that is not playing, then flips one bit. The engine switches on the next sample boundary, so changing the cab never produces a half-old, half-new filter or a click.</p>
+  <p><b>Scaling.</b> FPGA arithmetic is integer, so the IR is stored as <code>h = hq / 2<sup>shift</sup></code>, with <code>hq</code> an 18-bit integer. The driver picks the largest <code>shift</code> that still fits 18 bits and can't overflow the accumulators. That shift is the "≫" at the end, and each bank keeps its own.</p>
+  <details class="code" open><summary><span class="mono">sw/cab_conv.py</span> · choosing the shift</summary><pre><code>shift = int(math.floor(math.log2(CMAX / peak)))
+shift = max(0, min(63, shift))
+while True:
+    hq = np.clip(np.round(hp * 2.0 ** shift), -CMAX, CMAX).astype(np.int64)
+    lane_l1 = np.abs(hq).reshape(-1, ltaps).sum(axis=1).max()
+    if lane_l1 * (1 &lt;&lt; (DW - 1)) &lt; (1 &lt;&lt; (AW - 1)) or shift == 0:
+        break
+    shift -= 1
+return hq, shift</code></pre></details>
+</section>
+
+<section>
+  <h2>The time budget of one sample</h2>
+  <p>Everything above happens once per sample, inside 1/48 000 s = 20.8 µs = 2560 clock cycles.</p>
+  <figure>
+    <div class="frame">
+    <svg viewBox="0 0 900 140" role="img" aria-label="Cycle budget per sample: about 12 cycles of pipeline fill and summing, 2048 cycles of multiply-accumulate, and about 500 cycles of spare time out of 2560.">
+      <rect x="50" y="40" width="800" height="36" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      <rect x="50" y="40" width="640" height="36" fill="var(--accent)" opacity=".85"/>
+      <rect x="690" y="40" width="4" height="36" fill="var(--data)"/>
+      <text x="370" y="63" text-anchor="middle" style="fill:var(--bg);font-weight:600">2048 cycles: multiply-accumulate in all 4 lanes</text>
+      <text x="772" y="63" text-anchor="middle" class="t-s">spare ≈ 500</text>
+      <g class="t-s">
+        <line x1="50" y1="76" x2="50" y2="88" stroke="currentColor"/><text x="50" y="104" text-anchor="middle">0</text>
+        <line x1="690" y1="76" x2="690" y2="88" stroke="currentColor"/><text x="690" y="104" text-anchor="middle">2048</text>
+        <line x1="850" y1="76" x2="850" y2="88" stroke="currentColor"/><text x="850" y="104" text-anchor="middle">2560</text>
+      </g>
+      <text x="694" y="30" class="t-s t-data">+ ~12: pipeline drain, lane sum, shift</text>
+      <text x="450" y="128" text-anchor="middle" class="t-s">one sample = 20.8 µs at 122.88 MHz</text>
+    </svg>
+    </div>
+    <figcaption>This is why a longer IR means more lanes rather than longer ones. A lane of 4096 taps would need more than 2560 cycles, but another 4 lanes only cost 4 more DSPs and more BRAM.</figcaption>
+  </figure>
+  <details class="code" open><summary><span class="mono">rtl/fir_engine.v</span> · after the 2048 MACs: drain, sum, shift, saturate</summary><pre><code>S_DRAIN: begin
+    v0 &lt;= 1&#x27;b0;
+    // wait until the last product has been accumulated
+    if (!v0 &amp;&amp; !v1 &amp;&amp; !v2 &amp;&amp; !v3)
+        state &lt;= S_SUM;
+end
+S_SUM: begin
+    total &lt;= sum_c;
+    state &lt;= S_SHIFT;
+end
+S_SHIFT: begin
+    shifted &lt;= total &gt;&gt;&gt; shift_act;
+    state   &lt;= S_SAT;
+end
+S_SAT: begin
+    if (shifted &gt; YMAX) begin
+        y_out &lt;= YMAX[DW-1:0];
+        y_sat &lt;= 1&#x27;b1;
+    end else if (shifted &lt; YMIN) begin
+        ...</code></pre></details>
+</section>
+
+<section>
+  <h2>I2S: how samples reach the codec</h2>
+  <p><b>I2S</b> (Inter-IC Sound) is a three-wire serial link for audio between chips. One device is the clock master; here that is the FPGA, and the codec follows. Samples travel one bit at a time, most significant bit first.</p>
+  <dl>
+    <dt>BCLK</dt><dd>bit clock, 3.072 MHz. One data bit per period: 64 periods per stereo frame, 32 per channel.</dd>
+    <dt>LRCLK</dt><dd>word select, 48 kHz. Low while the left sample is sent, high for the right. One full period is one sample frame.</dd>
+    <dt>SDATA</dt><dd>the bits themselves. There are two lines: ADC → FPGA, and FPGA → DAC.</dd>
+    <dt>MCLK</dt><dd>master clock for the codec's converters, 12.288 MHz = 256 × 48 kHz. Not part of I2S proper.</dd>
+  </dl>
+  <figure>
+    <div class="frame">
+    <svg viewBox="0 0 900 150" role="img" aria-label="One I2S frame: LRCLK low for 32 bit clocks carrying the left 24-bit sample, then high for 32 bit clocks carrying the right sample; each sample starts one bit after the LRCLK edge, followed by 8 unused bits.">
+      <text x="20" y="45" class="t-m">LRCLK</text>
+      <polyline class="wire" points="100,55 480,55 480,25 860,25" style="stroke-width:1.8"/>
+      <text x="290" y="47" text-anchor="middle" class="t-s">left channel · 32 BCLK</text>
+      <text x="670" y="17" text-anchor="middle" class="t-s">right channel · 32 BCLK</text>
+      <text x="20" y="105" class="t-m">SDATA</text>
+      <rect x="112" y="88" width="285" height="26" fill="var(--accent)" opacity=".85"/>
+      <rect x="492" y="88" width="285" height="26" fill="var(--accent)" opacity=".55"/>
+      <rect x="397" y="88" width="83" height="26" fill="none" stroke="var(--line)"/>
+      <rect x="777" y="88" width="83" height="26" fill="none" stroke="var(--line)"/>
+      <text x="254" y="106" text-anchor="middle" style="fill:var(--bg);font-weight:600">L: 24 bits, MSB first</text>
+      <text x="634" y="106" text-anchor="middle" style="fill:var(--bg);font-weight:600">R: 24 bits</text>
+      <text x="438" y="106" text-anchor="middle" class="t-s">7 × 0</text>
+      <text x="818" y="106" text-anchor="middle" class="t-s">7 × 0</text>
+      <text x="480" y="140" text-anchor="middle" class="t-s">one frame = 64 BCLK = 20.8 µs</text>
+    </svg>
+    </div>
+  </figure>
+  <figure>
+    <div class="frame">
+    <svg viewBox="0 0 900 210" role="img" aria-label="Zoom on the start of a frame: LRCLK falls, and the most significant data bit appears one BCLK later; data changes on the falling edge of BCLK and is sampled on the rising edge.">
+      <defs><marker id="e1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="var(--data)"/></marker></defs>
+      <text x="20" y="50" class="t-m">BCLK</text>
+      <polyline class="wire" style="stroke-width:1.8" points="60,30 100,30 100,60 150,60 150,30 200,30 200,60 250,60 250,30 300,30 300,60 350,60 350,30 400,30 400,60 450,60 450,30 500,30 500,60 550,60 550,30 600,30 600,60 650,60 650,30 700,30 700,60 750,60 750,30 800,30 800,60 850,60 850,30"/>
+      <text x="20" y="110" class="t-m">LRCLK</text>
+      <polyline class="wire" style="stroke-width:1.8" points="60,90 100,90 100,120 850,120"/>
+      <text x="20" y="170" class="t-m">SDATA</text>
+      <g>
+        <rect x="100" y="150" width="100" height="28" fill="none" stroke="var(--line)"/><text x="150" y="169" text-anchor="middle" class="t-s">delay bit</text>
+        <rect x="200" y="150" width="100" height="28" fill="var(--accent)" opacity=".85"/><text x="250" y="169" text-anchor="middle" class="t-m" style="fill:var(--bg)">L23 MSB</text>
+        <rect x="300" y="150" width="100" height="28" fill="var(--accent)" opacity=".7"/><text x="350" y="169" text-anchor="middle" class="t-m" style="fill:var(--bg)">L22</text>
+        <rect x="400" y="150" width="100" height="28" fill="var(--accent)" opacity=".7"/><text x="450" y="169" text-anchor="middle" class="t-m" style="fill:var(--bg)">L21</text>
+        <rect x="500" y="150" width="100" height="28" fill="var(--accent)" opacity=".7"/><text x="550" y="169" text-anchor="middle" class="t-m" style="fill:var(--bg)">L20</text>
+        <rect x="600" y="150" width="100" height="28" fill="var(--accent)" opacity=".7"/><text x="650" y="169" text-anchor="middle" class="t-m" style="fill:var(--bg)">L19</text>
+        <rect x="700" y="150" width="150" height="28" fill="var(--accent)" opacity=".5"/><text x="775" y="169" text-anchor="middle" class="t-m" style="fill:var(--bg)">…</text>
+      </g>
+      <line x1="250" y1="66" x2="250" y2="146" stroke="var(--data)" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#e1)"/>
+      <text x="258" y="140" class="t-s t-data">sampled on rising edge</text>
+      <text x="150" y="200" text-anchor="middle" class="t-s">LRCLK edge</text>
+      <text x="250" y="200" text-anchor="middle" class="t-s">+1 BCLK: MSB</text>
+    </svg>
+    </div>
+    <figcaption>The FPGA derives every clock from its one 122.88 MHz clock: MCLK = ÷10, BCLK = ÷40, LRCLK = ÷2560. The codec runs with its PLL off, so its sample rate is exactly the FPGA's and samples can never slip.</figcaption>
+  </figure>
+  <details class="code" open><summary><span class="mono">rtl/i2s_master.v</span> · BCLK, LRCLK and data from one phase counter</summary><pre><code>// BCLK: low in the first half of the bit, high in the second
+bclk_r &lt;= (ph &gt;= HALF);
+
+// launch LRCLK and data at the start of each bit (falling BCLK)
+if (ph == 0) begin
+    lrclk_r &lt;= bitn[5];
+    if (bitn == 6&#x27;d0) begin
+        // frame boundary: hand over received words, latch tx
+        rx_l       &lt;= sh_l;
+        rx_r       &lt;= sh_r;
+        frame_tick &lt;= 1&#x27;b1;
+        tl         &lt;= tx_l;
+        tr         &lt;= tx_r;
+        sdo_r      &lt;= 1&#x27;b0;             // slot 0 = I2S delay bit
+    end else begin
+        sdo_r &lt;= txbit(bitn, tl, tr);</code></pre></details>
+</section>
+
+<section>
+  <h2>Recording</h2>
+  <p>The capture ring is a BRAM of 8192 frames (170.7 ms). While REC is on (BTN0, or a register bit), every frame stores the selected input and the FIR output for the same sample. Linux reads whatever is new about every 20 ms over AXI4-Lite and appends it to a stereo 24-bit WAV, with the dry signal on the left and the wet on the right. The ring gives Linux eight times more slack than it needs, so in testing no frame was lost.</p>
+  <details class="code" open><summary><span class="mono">rtl/cab_conv_top.v</span> · capture ring</summary><pre><code>wire cap_we   = r_rec &amp;&amp; !rec_rise &amp;&amp; y_done;   // x_dly belongs to this y
+
+(* ram_style = &quot;block&quot; *)
+reg [2*DW-1:0] cap_mem [0:(1&lt;&lt;CAP_LOG2)-1];
+
+always @(posedge aclk) begin
+    r_rec_q &lt;= r_rec;
+    if (rst || rec_rise)
+        rec_wptr &lt;= 32&#x27;d0;
+    else if (cap_we)
+        rec_wptr &lt;= rec_wptr + 1&#x27;b1;
+end
+
+always @(posedge aclk) begin
+    if (cap_we)
+        cap_mem[rec_wptr[CAP_LOG2-1:0]] &lt;= {x_dly, y};
+    cap_q &lt;= cap_mem[s_axi_araddr[CAP_LOG2+2:3]];   // registered read</code></pre></details>
+</section>
+
+<section>
+  <h2>Glossary</h2>
+  <dl>
+    <dt>PL / PS</dt><dd>Programmable Logic (the FPGA fabric) and Processing System (the two ARM cores and their DDR, SD and USB).</dd>
+    <dt>BRAM</dt><dd>block RAM: 36 Kbit memory tiles inside the fabric. The Z-7020 has 140; this design uses 26 (14 for audio, 12 for the recording ring).</dd>
+    <dt>MAC</dt><dd>multiply-accumulate, <code>acc += a·b</code>: the one operation an FIR filter is made of.</dd>
+    <dt>AXI4-Lite</dt><dd>a simple memory-mapped bus. Linux reads and writes the design's registers as if they were memory at 0x43C00000.</dd>
+    <dt>z⁻¹</dt><dd>a one-sample delay, in signal-processing notation.</dd>
+    <dt>IR</dt><dd>impulse response: the cabinet + mic + room captured as a list of taps.</dd>
+  </dl>
+</section>
+</main>
+</body>
+</html>
