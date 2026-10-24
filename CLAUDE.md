@@ -37,6 +37,7 @@ rtl/fir_engine.v     multi-lane time-multiplexed FIR, ping-pong coef banks
 rtl/i2s_master.v     I2S master (codec is slave), 64 BCLK/frame, 24-bit in 32-bit slots
 rtl/clk_fwd.v        ODDR clock forwarding (plain flop under `SIMULATION`)
 rtl/debounce.v       button sync + debounce (BTN0 -> REC, BTN1 -> bypass; LED0 blinks while REC, LED1 = !bypass)
+rtl/level_led.v      peak envelope -> PWM LED (LED2 = input, LED3 = DAC output level), 6 dB per brightness doubling
 sim/tb_cab_conv.v    AXI BFM + behavioural ADAU1761 I2S slave
 sim/run_sim.py       stimulus gen, runs iverilog/vvp, bit-exact check vs Python model
 vivado/build.tcl     project + block design + bitstream, copies .bit/.hwh to build/

@@ -10,6 +10,7 @@
 //   record into the capture ring (wraps), stop, dump ring to cap.txt
 //   record button: glitch, bouncing press / release x2, led_rec blinks only while REC
 //   bypass button (during mute): press x2 toggles CTRL[0], led_cab check
+//   level LEDs (PWM) lit while audio plays
 //   bypass on                                -> F3 frames
 //   mute on                                  -> until input runs out
 
@@ -64,6 +65,12 @@ module tb_cab_conv;
     wire led_rec;
     reg  btn_byp = 0;
     wire led_cab;
+    wire led_lvl_in, led_lvl_out;
+    integer lvl_in_on = 0, lvl_out_on = 0;
+    always @(posedge aclk) begin
+        if (led_lvl_in)  lvl_in_on  = lvl_in_on + 1;
+        if (led_lvl_out) lvl_out_on = lvl_out_on + 1;
+    end
 
     cab_conv_top #(.NLANE(NLANE), .LW(LW), .HALF(HALF),
                    .CAP_LOG2(CAP_LOG2), .DEB_BITS(DEB_BITS), .BLINK_BIT(BLINK_BIT)) dut (
@@ -80,7 +87,8 @@ module tb_cab_conv;
         .mclk(mclk), .bclk(bclk), .lrclk(lrclk), .sdata_o(sdata_o),
         .sdata_i(sdata_i), .codec_addr(codec_addr),
         .btn_rec(btn_rec), .led_rec(led_rec),
-        .btn_byp(btn_byp), .led_cab(led_cab)
+        .btn_byp(btn_byp), .led_cab(led_cab),
+        .led_lvl_in(led_lvl_in), .led_lvl_out(led_lvl_out)
     );
 
     // ------------------------------------------------------------------
@@ -377,6 +385,10 @@ module tb_cab_conv;
         @(posedge aclk);
         if (led_cab !== 1'b0) $display("FAIL: led_cab on during AXI bypass");
         wait_frames(f3);
+
+        // level LEDs must have been lit (PWM) while audio was playing
+        $display("level LEDs: in on %0d cycles, out on %0d cycles", lvl_in_on, lvl_out_on);
+        if (lvl_in_on == 0 || lvl_out_on == 0) $display("FAIL: level LED never lit");
 
         // ---- mute ----
         $display("[%0d] mute", fidx);

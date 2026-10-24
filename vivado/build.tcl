@@ -104,6 +104,10 @@ create_bd_port -dir I btn_byp
 connect_bd_net [get_bd_ports btn_byp] [get_bd_pins cab_conv/btn_byp]
 create_bd_port -dir O led_cab
 connect_bd_net [get_bd_ports led_cab] [get_bd_pins cab_conv/led_cab]
+foreach p {led_lvl_in led_lvl_out} {
+    create_bd_port -dir O $p
+    connect_bd_net [get_bd_ports $p] [get_bd_pins cab_conv/$p]
+}
 
 # address map: 128 KiB at 0x43C00000
 assign_bd_address

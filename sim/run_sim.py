@@ -110,7 +110,7 @@ def main():
         f.write("\n".join(hex18(v) for v in qb) + "\n")
 
     rtl = [os.path.join(ROOT, "rtl", n) for n in
-           ("clk_fwd.v", "debounce.v", "i2s_master.v", "fir_engine.v", "cab_conv_top.v")]
+           ("clk_fwd.v", "debounce.v", "level_led.v", "i2s_master.v", "fir_engine.v", "cab_conv_top.v")]
     vvp = os.path.join(w, "tb.vvp")
     subprocess.check_call(
         ["iverilog", "-g2005", "-DSIMULATION", "-DNLANE=%d" % nlane,

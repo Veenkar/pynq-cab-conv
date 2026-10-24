@@ -33,7 +33,7 @@
 //
 // The codec address pins are driven high (I2C address 0x3B, like PYNQ).
 // Buttons: BTN0 toggles REC (LED0 blinks while recording), BTN1 toggles bypass
-// (LED1 = cab on).
+// (LED1 = cab on). LED2 / LED3: input / output level as PWM brightness.
 
 `timescale 1ns / 1ps
 
@@ -85,7 +85,9 @@ module cab_conv_top #(
     input  wire        btn_rec,     // BTN0: toggle REC
     output wire        led_rec,     // LED0: blinks while recording
     input  wire        btn_byp,     // BTN1: toggle bypass
-    output wire        led_cab      // LED1: cab on (bypass off)
+    output wire        led_cab,     // LED1: cab on (bypass off)
+    output wire        led_lvl_in,  // LED2: input level (PWM)
+    output wire        led_lvl_out  // LED3: output level (PWM)
 );
 
     localparam DW        = 24;
@@ -323,14 +325,20 @@ module cab_conv_top #(
     // meters run one cycle behind the audio path (registered |x|, |y|)
     // to keep input select + abs + compare out of a single clock cycle
     reg [DW-1:0] abs_x, abs_y;
-    reg          m_in, m_out, m_out_sat;
+    reg          m_in, m_out, m_out_sat, m_y;
     always @(posedge aclk) begin
         abs_x     <= absval(x_sel);
         abs_y     <= absval(y);
         m_in      <= frame_tick && !rst;
         m_out     <= y_done && !r_mute && !r_bypass && !rst;
         m_out_sat <= y_sat;
+        m_y       <= y_done && !rst;
     end
+
+    // level LEDs: input, and what actually goes to the DAC (dry in bypass, 0 when muted)
+    level_led u_led_in (.clk(aclk), .rst(rst), .valid(m_in), .level(abs_x), .led(led_lvl_in));
+    level_led u_led_out (.clk(aclk), .rst(rst), .valid(m_y),
+                         .level(r_mute ? {DW{1'b0}} : r_bypass ? abs_x : abs_y), .led(led_lvl_out));
 
     always @(posedge aclk) begin
         if (rst) begin

@@ -30,6 +30,7 @@ rtl/
   i2s_master.v      I2S master dla ADAU1761 (kodek jako slave)
   clk_fwd.v         wyprowadzenie MCLK przez ODDR
   debounce.v        synchronizacja i eliminacja drgań styków przycisków
+  level_led.v       obwiednia poziomu -> jasność diody (PWM)
 sim/
   tb_cab_conv.v     testbench: master AXI + model kodeka I2S
   run_sim.py        generuje bodźce, uruchamia Icarusa, sprawdza bit w bit
@@ -204,6 +205,7 @@ skryptu; program widzi i może zmieniać te same bity `CTRL`):
 |---|---|---|
 | BTN0 | włącza/wyłącza nagrywanie (`CTRL[6]`, zob. [Nagrywanie](#nagrywanie)) | LED0 miga (ok. 1,8 Hz) podczas nagrywania |
 | BTN1 | włącza/wyłącza bypass (`CTRL[0]`): sygnał suchy zamiast kolumny | LED1 świeci, gdy kolumna działa (bypass wyłączony, stan po włączeniu) |
+| | | LED2 / LED3: poziom wejścia / wyjścia; jasność podwaja się co 6 dB (ciemno poniżej ok. -48 dBFS), opadanie ok. 85 ms |
 
 ## Podłączenie wzmacniacza: ważne
 

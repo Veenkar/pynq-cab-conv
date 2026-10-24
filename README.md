@@ -30,6 +30,7 @@ rtl/
   i2s_master.v      I2S master for the ADAU1761 (codec is the slave)
   clk_fwd.v         MCLK forwarded through an ODDR
   debounce.v        push-button synchroniser + debounce
+  level_led.v       level envelope -> PWM LED brightness
 sim/
   tb_cab_conv.v     testbench: AXI master + I2S codec model
   run_sim.py        generates stimulus, runs Icarus, checks bit-exact
@@ -204,6 +205,7 @@ script running; software sees and can change the same `CTRL` bits):
 |---|---|---|
 | BTN0 | toggle recording (`CTRL[6]`, see [Recording](#recording)) | LED0 blinks (~1.8 Hz) while recording |
 | BTN1 | toggle bypass (`CTRL[0]`): dry signal instead of the cab | LED1 on while the cab is active (bypass off, the power-on state) |
+| | | LED2 / LED3: input / output level; brightness doubles every 6 dB (dark below about -48 dBFS), ~85 ms release |
 
 ## Connecting the amp: important
 
