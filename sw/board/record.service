@@ -1,5 +1,5 @@
 # systemd unit: recorder daemon (dry L / wet R to WAV on REC, BTN0 toggles).
-# Install: sudo ./install_autostart.sh --rec
+# Install: sudo ./install_autostart.sh (default; --no-rec skips it)
 # Takes are written to /home/xilinx/cab_conv/rec/.
 [Unit]
 Description=Cab convolver recorder (BTN0 / CTRL[6] -> WAV)

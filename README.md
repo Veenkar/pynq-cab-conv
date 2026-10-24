@@ -150,9 +150,9 @@ To start the convolver automatically at boot, run the install script from
 
 ```
 cd ~xilinx/cab_conv
-sudo ./install_autostart.sh            # autostart only (IR ready ~160 s after power-on)
-sudo ./install_autostart.sh --fast     # + faster boot (IR ready ~85 s)
-sudo ./install_autostart.sh --rec      # + record.service (BTN0 recorder); combine: --fast --rec
+sudo ./install_autostart.sh            # autostart + BTN0 recorder (IR ready ~160 s after power-on)
+sudo ./install_autostart.sh --fast     # + faster boot (IR ready ~85 s, ~50 s with eth-disable.sh)
+sudo ./install_autostart.sh --no-rec   # without record.service (BTN0 then only toggles REC/LED0)
 sudo ./install_autostart.sh --oled     # + status.service (OLED display, see Status display)
 sudo ./install_autostart.sh --restore  # undo everything, back to PYNQ defaults
 ```
@@ -279,9 +279,9 @@ Each take is a pair `rec_YYYYmmdd_HHMMSS_dry.wav` + `rec_YYYYmmdd_HHMMSS_wet.wav
 in `~xilinx/cab_conv/rec/`, sample-aligned and of equal length (the dry file
 can go straight back into a DAW for reamping). They are written incrementally;
 the headers are patched every 2 s, so a power cut loses
-at most the last couple of seconds. For a permanent setup, `install_autostart.sh
---rec` installs `record.service` (after `cab-conv.service`), and then BTN0 starts
-and stops a take at any time. Each 24-bit mono file grows by about 8.6 MB per minute.
+at most the last couple of seconds. `install_autostart.sh` also installs
+`record.service` (after `cab-conv.service`) unless given `--no-rec`, so BTN0
+starts and stops a take at any time after boot. Each 24-bit mono file grows by about 8.6 MB per minute.
 
 ## Status display (OLED)
 
@@ -317,7 +317,7 @@ OT [##########.....:...]   -6dB    output peak (bar -60..0 dBFS, tick at -12 dB)
 ```
 sudo -i python3 ~xilinx/cab_conv/oled.py test      # test pattern for 5 s
 sudo -i python3 ~xilinx/cab_conv/status.py         # the display daemon (8 Hz)
-sudo ./install_autostart.sh --oled                 # status.service at boot; combine: --fast --rec --oled
+sudo ./install_autostart.sh --oled                 # status.service at boot; combine: --fast --oled
 ```
 
 `status.py` only reads registers (no overlay reload) and shows "no overlay"

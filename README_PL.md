@@ -150,9 +150,9 @@ w `ExecStart` w `/etc/systemd/system/cab-conv.service`.
 
 ```
 cd ~xilinx/cab_conv
-sudo ./install_autostart.sh            # sam autostart (IR gotowa ok. 160 s po włączeniu)
-sudo ./install_autostart.sh --fast     # + szybszy start (IR gotowa ok. 85 s)
-sudo ./install_autostart.sh --rec      # + record.service (nagrywanie BTN0); razem: --fast --rec
+sudo ./install_autostart.sh            # autostart + nagrywanie BTN0 (IR gotowa ok. 160 s po włączeniu)
+sudo ./install_autostart.sh --fast     # + szybszy start (IR gotowa ok. 85 s, ok. 50 s z eth-disable.sh)
+sudo ./install_autostart.sh --no-rec   # bez record.service (BTN0 przełącza wtedy tylko REC/LED0)
 sudo ./install_autostart.sh --oled     # + status.service (wyświetlacz OLED, patrz Wyświetlacz stanu)
 sudo ./install_autostart.sh --restore  # cofa wszystko, ustawienia PYNQ jak w obrazie
 ```
@@ -279,9 +279,9 @@ Każde ujęcie to para `rec_YYYYmmdd_HHMMSS_dry.wav` + `rec_YYYYmmdd_HHMMSS_wet.
 w `~xilinx/cab_conv/rec/`, zgranych co do próbki i równej długości (plik suchy
 można od razu wrzucić do DAW do reampingu). Są zapisywane na bieżąco, a nagłówki
 są poprawiane co 2 s, więc po utracie
-zasilania przepada najwyżej kilka ostatnich sekund. Na stałe: `install_autostart.sh
---rec` instaluje `record.service` (po `cab-conv.service`), a wtedy BTN0 w każdej
-chwili startuje i kończy ujęcie. Każdy plik mono 24 bit rośnie o ok. 8,6 MB na minutę.
+zasilania przepada najwyżej kilka ostatnich sekund. `install_autostart.sh` instaluje też
+`record.service` (po `cab-conv.service`), chyba że podasz `--no-rec`, więc po
+starcie BTN0 w każdej chwili startuje i kończy ujęcie. Każdy plik mono 24 bit rośnie o ok. 8,6 MB na minutę.
 
 ## Wyświetlacz stanu (OLED)
 
@@ -318,7 +318,7 @@ OT [##########.....:...]   -6dB    szczyt wyjścia (pasek -60..0 dBFS, kreska pr
 ```
 sudo -i python3 ~xilinx/cab_conv/oled.py test      # obraz testowy na 5 s
 sudo -i python3 ~xilinx/cab_conv/status.py         # demon wyświetlacza (8 Hz)
-sudo ./install_autostart.sh --oled                 # status.service przy starcie; razem: --fast --rec --oled
+sudo ./install_autostart.sh --oled                 # status.service przy starcie; razem: --fast --oled
 ```
 
 `status.py` tylko czyta rejestry (bez przeładowania overlayu) i do czasu

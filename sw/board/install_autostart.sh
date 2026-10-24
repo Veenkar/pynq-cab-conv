@@ -2,16 +2,16 @@
 # Install / remove the boot-time start of the cab convolver on a PYNQ-Z2 (PYNQ 3.0).
 # Run as root from the directory with cab-conv.service (e.g. ~xilinx/cab_conv):
 #
-#   sudo ./install_autostart.sh            install + enable cab-conv.service
+#   sudo ./install_autostart.sh            install + enable cab-conv.service and record.service
+#                                          (BTN0 recorder, takes go to ~xilinx/cab_conv/rec)
 #   sudo ./install_autostart.sh --fast     also speed up boot (IR ready ~85 s instead of ~160 s):
 #                                          - /boot/boot.py: drop the base.bit load + LED blink
 #                                            (original kept as /boot/boot.py.orig)
 #                                          - disable jupyter.service and clear_pl_statefile.service
 #                                            (the latter has Requires=jupyter.service)
-#   sudo ./install_autostart.sh --rec      also install + enable record.service (BTN0 recorder);
-#                                          combinable: --fast --rec
+#   sudo ./install_autostart.sh --no-rec   without the recorder (removes record.service if present)
 #   sudo ./install_autostart.sh --oled     also install + enable status.service (SSD1306 OLED on
-#                                          /dev/i2c-0); combinable: --fast --rec --oled
+#                                          /dev/i2c-0); combinable: --fast --oled --no-rec
 #   sudo ./install_autostart.sh --restore  undo everything: disable cab-conv.service and
 #                                          record.service and
 #                                          status.service, restore boot.py, re-enable Jupyter
@@ -58,26 +58,30 @@ case "${1:-}" in
     systemctl daemon-reload
     echo "restored PYNQ defaults (takes effect at next boot)"
     ;;
-""|--fast|--rec|--oled)
+""|--fast|--no-rec|--rec|--oled)
+    REC=1                                   # the recorder is installed by default
     for opt in "$@"; do
         case "$opt" in
-        --fast|--rec|--oled) ;;
-        *) sed -n '2,17p' "$0"; exit 1 ;;
+        --no-rec) REC=0 ;;
+        --fast|--rec|--oled) ;;             # --rec: old spelling of the default
+        *) sed -n '2,18p' "$0"; exit 1 ;;
         esac
     done
     install -m 644 "$HERE/cab-conv.service" "$UNIT"
-    case " $* " in *" --rec "*)
+    if [ "$REC" = 1 ]; then
         install -m 644 "$HERE/record.service" "$RECUNIT"
         install -d -o xilinx -g xilinx /home/xilinx/cab_conv/rec 2>/dev/null || true
-        ;;
-    esac
+    else
+        systemctl disable --now record.service 2>/dev/null || true
+        rm -f "$RECUNIT"
+    fi
     case " $* " in *" --oled "*) install -m 644 "$HERE/status.service" "$OLEDUNIT" ;; esac
     systemctl daemon-reload
     systemctl enable cab-conv.service
-    case " $* " in *" --rec "*)
+    if [ "$REC" = 1 ]; then
         systemctl enable record.service
-        echo "record.service enabled (takes go to ~xilinx/cab_conv/rec)" ;;
-    esac
+        echo "record.service enabled (takes go to ~xilinx/cab_conv/rec)"
+    fi
     case " $* " in *" --oled "*)
         systemctl enable status.service
         echo "status.service enabled (OLED on /dev/i2c-0, addr 0x3C)" ;;
@@ -86,6 +90,6 @@ case "${1:-}" in
     echo "cab-conv.service enabled; edit ExecStart in $UNIT to change IR/levels"
     ;;
 *)
-    sed -n '2,17p' "$0"; exit 1
+    sed -n '2,18p' "$0"; exit 1
     ;;
 esac

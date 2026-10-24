@@ -47,7 +47,7 @@ sw/cab_conv.py       PYNQ driver: overlay, codec over /dev/i2c-*, IR prep/quanti
 sw/example.py        usage example
 sw/board/            helper scripts used on the board in ~xilinx/cab_conv/ (run with sudo -i):
                      load_cab.py (overlay + IR), load_ir.py (IR only), meter.py (live levels), ctl.py (mute/HP vol),
-                     record.py + record.service (dry/wet WAV recorder, `install_autostart.sh --rec`),
+                     record.py + record.service (dry/wet WAV recorder, installed by default by `install_autostart.sh`, `--no-rec` to skip),
                      oled.py (SSD1306 128x32 driver over /dev/i2c-0 + 5x7 font + Canvas; `oled.py test [--ascii]`),
                      status.py + status.service (OLED daemon: mode, REC time, IR name from current_ir.txt written by
                      autostart.py/load_ir.py, peak meters; reads regs only, `install_autostart.sh --oled`),
