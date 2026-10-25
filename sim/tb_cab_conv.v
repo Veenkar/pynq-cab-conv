@@ -9,10 +9,13 @@
 //   load IR B into bank 0, switch mid-stream -> F2 frames
 //   record into the capture ring (wraps), stop, dump ring to cap.txt
 //   record button: glitch, bouncing press / release x2, led_rec blinks only while REC
+//   reverb button (BTN3 -> ECHO_CTRL[5], led_rev) twice with unmuted output: LD5 colours
+//   echo button (during mute): press x2 toggles ECHO_CTRL[0], led_echo check
 //   bypass button (during mute): press x2 toggles CTRL[0], led_cab check
 //   level LEDs (PWM) lit while audio plays
 //   bypass on                                -> F3 frames
-//   mute on                                  -> until input runs out
+//   Space Echo program from echo_cmd.hex (see run_echo), ends with mute on
+//                                            -> until input runs out
 
 `timescale 1ns / 1ps
 
@@ -32,6 +35,9 @@ module tb_cab_conv;
 `endif
 `ifndef BLINK_BIT
 `define BLINK_BIT 3
+`endif
+`ifndef ECHO_SLEW
+`define ECHO_SLEW 13
 `endif
 `ifndef DEB_BITS
 `define DEB_BITS 4
@@ -65,15 +71,59 @@ module tb_cab_conv;
     wire led_rec;
     reg  btn_byp = 0;
     wire led_cab;
-    wire led_lvl_in, led_lvl_out;
+    reg  btn_echo = 0;
+    wire led_echo;
+    reg  btn_rev = 0;
+    wire led_rev, led5_r, led5_g, led5_b;
+    wire led_lvl_in, led_rgb_r, led_rgb_b;
+    // LD4 colour: on-phase of led_rec = pure red; else the level colour of the mode:
+    // cab/off green, cab/echo blue, bypass/off white, bypass/echo cyan
+    integer ld4_cov0 = 0, ld4_cov1 = 0, ld4_cov2 = 0, ld4_cov3 = 0;
+    wire [2:0] ld4 = {led_rgb_r, led_lvl_in, led_rgb_b};   // R G B
+    always @(posedge aclk) if (aresetn) begin
+        if (led_rec === 1'b1) begin
+            if (ld4 !== 3'b100) $display("FAIL: LD4 not pure red during REC blink (%b)", ld4);
+        end else begin
+            case ({led_cab === 1'b0, led_echo === 1'b1})
+            2'b00: begin if (ld4 !== 3'b000 && ld4 !== 3'b010) $display("FAIL: LD4 cab/off colour %b", ld4);
+                         if (ld4 === 3'b010) ld4_cov0 = ld4_cov0 + 1; end
+            2'b01: begin if (ld4 !== 3'b000 && ld4 !== 3'b001) $display("FAIL: LD4 cab/echo colour %b", ld4);
+                         if (ld4 === 3'b001) ld4_cov1 = ld4_cov1 + 1; end
+            2'b10: begin if (ld4 !== 3'b000 && ld4 !== 3'b111) $display("FAIL: LD4 bypass/off colour %b", ld4);
+                         if (ld4 === 3'b111) ld4_cov2 = ld4_cov2 + 1; end
+            2'b11: begin if (ld4 !== 3'b000 && ld4 !== 3'b011) $display("FAIL: LD4 bypass/echo colour %b", ld4);
+                         if (ld4 === 3'b011) ld4_cov3 = ld4_cov3 + 1; end
+            endcase
+        end
+    end
+    // LD5 (output level): same colours, last mode is REV instead of echo EN
+    integer ld5_cov0 = 0, ld5_cov1 = 0, ld5_cov2 = 0, ld5_cov3 = 0;
+    wire [2:0] ld5 = {led5_r, led5_g, led5_b};   // R G B
+    always @(posedge aclk) if (aresetn) begin
+        if (led_rec === 1'b1) begin
+            if (ld5 !== 3'b100) $display("FAIL: LD5 not pure red during REC blink (%b)", ld5);
+        end else begin
+            case ({led_cab === 1'b0, led_rev === 1'b1})
+            2'b00: begin if (ld5 !== 3'b000 && ld5 !== 3'b010) $display("FAIL: LD5 cab/off colour %b", ld5);
+                         if (ld5 === 3'b010) ld5_cov0 = ld5_cov0 + 1; end
+            2'b01: begin if (ld5 !== 3'b000 && ld5 !== 3'b001) $display("FAIL: LD5 cab/rev colour %b", ld5);
+                         if (ld5 === 3'b001) ld5_cov1 = ld5_cov1 + 1; end
+            2'b10: begin if (ld5 !== 3'b000 && ld5 !== 3'b111) $display("FAIL: LD5 bypass/off colour %b", ld5);
+                         if (ld5 === 3'b111) ld5_cov2 = ld5_cov2 + 1; end
+            2'b11: begin if (ld5 !== 3'b000 && ld5 !== 3'b011) $display("FAIL: LD5 bypass/rev colour %b", ld5);
+                         if (ld5 === 3'b011) ld5_cov3 = ld5_cov3 + 1; end
+            endcase
+        end
+    end
     integer lvl_in_on = 0, lvl_out_on = 0;
     always @(posedge aclk) begin
         if (led_lvl_in)  lvl_in_on  = lvl_in_on + 1;
-        if (led_lvl_out) lvl_out_on = lvl_out_on + 1;
+        if (led5_r || led5_g || led5_b) lvl_out_on = lvl_out_on + 1;
     end
 
     cab_conv_top #(.NLANE(NLANE), .LW(LW), .HALF(HALF),
-                   .CAP_LOG2(CAP_LOG2), .DEB_BITS(DEB_BITS), .BLINK_BIT(BLINK_BIT)) dut (
+                   .CAP_LOG2(CAP_LOG2), .DEB_BITS(DEB_BITS), .BLINK_BIT(BLINK_BIT),
+                   .ECHO_SLEW(`ECHO_SLEW)) dut (
         .aclk(aclk), .aresetn(aresetn),
         .s_axi_awaddr(awaddr), .s_axi_awprot(3'b000), .s_axi_awvalid(awvalid),
         .s_axi_awready(awready),
@@ -88,7 +138,9 @@ module tb_cab_conv;
         .sdata_i(sdata_i), .codec_addr(codec_addr),
         .btn_rec(btn_rec), .led_rec(led_rec),
         .btn_byp(btn_byp), .led_cab(led_cab),
-        .led_lvl_in(led_lvl_in), .led_lvl_out(led_lvl_out)
+        .btn_echo(btn_echo), .led_echo(led_echo),
+        .led_rgb_r(led_rgb_r), .led_rgb_b(led_rgb_b), .led_lvl_in(led_lvl_in),
+        .btn_rev(btn_rev), .led_rev(led_rev), .led5_r(led5_r), .led5_g(led5_g), .led5_b(led5_b)
     );
 
     // ------------------------------------------------------------------
@@ -137,6 +189,7 @@ module tb_cab_conv;
     // ------------------------------------------------------------------
     integer slot = 0;
     reg     lr_prev = 0;
+    reg     tail_dc = 0;
     integer fidx = 0;           // index of the frame being sent
     reg [23:0] cur_l = 0, cur_r = 0;
     reg [23:0] cap_l = 0, cap_r = 0;
@@ -154,7 +207,8 @@ module tb_cab_conv;
                     cur_l = inl[fidx];
                     cur_r = inr[fidx];
                 end else begin
-                    cur_l = 0; cur_r = 0;
+                    cur_l = tail_dc ? 24'h200000 : 24'd0;   // DC after the program, for the LD4 colour test
+                    cur_r = cur_l;
                 end
                 fidx = fidx + 1;
                 started = 1;
@@ -238,6 +292,78 @@ module tb_cab_conv;
         end
     endtask
 
+    // same for the echo button
+    task ebtn(input v, input integer n);
+        begin
+            btn_echo <= v;
+            repeat (n) @(posedge aclk);
+        end
+    endtask
+
+    task ebtn_bounce(input v);
+        begin
+            ebtn(v, 3);  ebtn(!v, 2);  ebtn(v, 4);  ebtn(!v, 3);
+            ebtn(v, 4 * (1 << DEB_BITS));
+        end
+    endtask
+
+    // same for the reverb button
+    task rbtn(input v, input integer n);
+        begin
+            btn_rev <= v;
+            repeat (n) @(posedge aclk);
+        end
+    endtask
+
+    task rbtn_bounce(input v);
+        begin
+            rbtn(v, 3);  rbtn(!v, 2);  rbtn(v, 4);  rbtn(!v, 3);
+            rbtn(v, 4 * (1 << DEB_BITS));
+        end
+    endtask
+
+    // led_rev must equal ECHO_CTRL[5]; the other ECHO_CTRL bits must not change
+    reg [5:0] rctl0;
+    task check_rev(input exp_rev, input [255:0] what);
+        begin
+            wait_frames(60);                // let the LD5 level PWM show
+            axi_read(17'h0040, r);
+            if (led_rev !== exp_rev || r[5] !== exp_rev || r[4:0] !== rctl0[4:0])
+                $display("FAIL: %0s (led_rev=%b ctrl=%02x, expected rev %b)",
+                         what, led_rev, r[7:0], exp_rev);
+        end
+    endtask
+
+    // glitch ignored, bouncing press toggles, release does not, press again toggles back
+    task rev_phase;
+        begin
+            axi_read(17'h0040, r);
+            rctl0 = r[5:0];
+            rbtn(1, 5);  rbtn(0, 3 * (1 << DEB_BITS));
+            check_rev(rctl0[5], "rev after glitch");
+            rbtn_bounce(1'b1);
+            check_rev(!rctl0[5], "rev after press 1");
+            rbtn_bounce(1'b0);
+            check_rev(!rctl0[5], "rev after release 1");
+            rbtn_bounce(1'b1);
+            check_rev(rctl0[5], "rev after press 2");
+            rbtn_bounce(1'b0);
+            check_rev(rctl0[5], "rev after release 2");
+        end
+    endtask
+
+    // led_echo must equal ECHO_CTRL[0]; the other ECHO_CTRL bits must not change
+    reg [5:0] ectl0;
+    task check_echo(input exp_en, input [255:0] what);
+        begin
+            wait_frames(60);                // let the LD4 level PWM show
+            axi_read(17'h0040, r);
+            if (led_echo !== exp_en || r[0] !== exp_en || r[5:1] !== ectl0[5:1])
+                $display("FAIL: %0s (led_echo=%b ctrl=%02x, expected en %b)",
+                         what, led_echo, r[7:0], exp_en);
+        end
+    endtask
+
     // led_cab must be the inverse of CTRL[0]; CTRL[1] (mute) must stay set
     task check_cab(input exp_led, input [255:0] what);
         begin
@@ -266,6 +392,40 @@ module tb_cab_conv;
                          what, seen0, seen1, r[6], exp);
             end
             if (!exp && seen1) $display("FAIL: %0s (led_rec lit while not recording)", what);
+        end
+    endtask
+
+    // ------------------------------------------------------------------
+    // Space Echo program: echo_cmd.hex holds 4 words per command {op, a, b, tag}
+    //   0 write reg a <- b        1 wait b frames        2 read reg a, log "RD tag S a value"
+    //   3 log "EVT tag S"         4 read reg a, expect b 5 sync: 40 cycles after the next echo
+    //   F end                     done (all register writes then land in the next frame)
+    // S = dut.samples = frames ticked so far; run_sim.py maps it to a sample index.
+    // ------------------------------------------------------------------
+    reg [31:0] ecmd [0:1023];
+    reg [31:0] ea, eb, etag, eop;
+    integer ep;
+    task run_echo;
+        begin
+            $readmemh("echo_cmd.hex", ecmd);
+            ep = 0;
+            eop = ecmd[0];
+            while (eop !== 32'hF) begin
+                ea = ecmd[ep+1]; eb = ecmd[ep+2]; etag = ecmd[ep+3];
+                case (eop)
+                32'd0: axi_write(ea[16:0], eb);
+                32'd1: wait_frames(eb);
+                32'd2: begin axi_read(ea[16:0], r);
+                             $display("RD %0d %0d %0d %0d", etag, dut.samples, ea, r); end
+                32'd3: $display("EVT %0d %0d", etag, dut.samples);
+                32'd4: begin axi_read(ea[16:0], r);
+                             if (r !== eb) $display("FAIL: reg %0h read %0h, expected %0h", ea, r, eb); end
+                32'd5: begin @(posedge dut.echo_done); repeat (40) @(posedge aclk); end
+                default: $display("FAIL: bad echo command %0d", eop);
+                endcase
+                ep = ep + 4;
+                eop = ecmd[ep];
+            end
         end
     endtask
 
@@ -372,6 +532,10 @@ module tb_cab_conv;
 
         wait_frames(f2);
 
+        // ---- reverb button, cab on (output not muted: LD5 shows the level) ----
+        $display("[%0d] reverb button test (cab on)", fidx);
+        rev_phase;
+
         axi_read(16'h000C, r);
         $display("STATUS  = %08x (in_clip=%0d out_clip=%0d overrun=%0d)",
                  r, r[1], r[2], r[3]);
@@ -386,17 +550,25 @@ module tb_cab_conv;
         if (led_cab !== 1'b0) $display("FAIL: led_cab on during AXI bypass");
         wait_frames(f3);
 
+        // ---- reverb button, cab bypassed ----
+        $display("[%0d] reverb button test (bypass)", fidx);
+        rev_phase;
+
         // level LEDs must have been lit (PWM) while audio was playing
         $display("level LEDs: in on %0d cycles, out on %0d cycles", lvl_in_on, lvl_out_on);
         if (lvl_in_on == 0 || lvl_out_on == 0) $display("FAIL: level LED never lit");
 
-        // ---- mute ----
+        // ---- Space Echo, then mute (the last command of the program) ----
+        $display("[%0d] echo program", fidx);
+        run_echo;
+        axi_read(16'h000C, r);
+        if (r[4]) $display("FAIL: echo overrun during the echo program");
         $display("[%0d] mute", fidx);
-        axi_write(16'h0008, 32'h02);
         axi_write(16'h0018, 32'h1);         // clear flags
         axi_read(16'h000C, r);
         if (r[2] !== 1'b0) $display("FAIL: clear did not work");
 
+        tail_dc = 1;                        // input level for the LD4 colour checks (output is muted)
         // ---- bypass button (mute hides the output, so the audio check is unaffected) ----
         $display("[%0d] bypass button test", fidx);
         check_cab(1'b1, "led_cab after mute write (bypass 0)");
@@ -410,11 +582,39 @@ module tb_cab_conv;
         check_cab(1'b1, "led_cab after bypass press 2");
         bbtn_bounce(1'b0);
         check_cab(1'b1, "led_cab after bypass release 2");
+
+        // ---- echo button (also under mute) ----
+        $display("[%0d] echo button test", fidx);
+        axi_write(16'h0008, 32'h03);        // bypass + mute: LD4 bypass colours
+        axi_read(17'h0040, r);
+        ectl0 = r[5:0];
+        check_echo(ectl0[0], "echo state before button");
+        ebtn(1, 5);  ebtn(0, 3 * (1 << DEB_BITS));
+        check_echo(ectl0[0], "echo after glitch");
+        ebtn_bounce(1'b1);
+        check_echo(!ectl0[0], "echo after press 1");
+        ebtn_bounce(1'b0);
+        check_echo(!ectl0[0], "echo after release 1");
+        ebtn_bounce(1'b1);
+        check_echo(ectl0[0], "echo after press 2");
+        ebtn_bounce(1'b0);
+        check_echo(ectl0[0], "echo after release 2");
+        axi_write(16'h0008, 32'h02);        // back to mute, cab on
         while (fidx < nin + 4) @(posedge aclk);
 
         axi_read(16'h000C, r);
         if (r[3]) $display("FAIL: engine overrun");
         else      $display("no engine overrun");
+        if (r[4]) $display("FAIL: echo overrun");
+        else      $display("no echo overrun");
+        $display("LD4 level cycles: cab/off %0d cab/echo %0d bypass/off %0d bypass/echo %0d",
+                 ld4_cov0, ld4_cov1, ld4_cov2, ld4_cov3);
+        if (ld4_cov0 == 0 || ld4_cov1 == 0 || ld4_cov2 == 0 || ld4_cov3 == 0)
+            $display("FAIL: an LD4 colour case was never exercised");
+        $display("LD5 level cycles: cab/off %0d cab/rev %0d bypass/off %0d bypass/rev %0d",
+                 ld5_cov0, ld5_cov1, ld5_cov2, ld5_cov3);
+        if (ld5_cov0 == 0 || ld5_cov1 == 0 || ld5_cov2 == 0 || ld5_cov3 == 0)
+            $display("FAIL: an LD5 colour case was never exercised");
         $display("MCLK edges = %0d over %0d frames (%0d per frame)",
                  mclk_edges, fidx, mclk_edges / fidx);
         $display("frames captured = %0d", frames_out);

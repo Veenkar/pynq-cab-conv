@@ -17,6 +17,7 @@
 //                         [1] input clip   (sticky)
 //                         [2] output clip  (sticky)
 //                         [3] engine overrun (sticky, should never be 1)
+//                         [4] echo overrun (sticky, should never be 1)
 //   0x0010  SHIFT0    RW  [5:0] output shift for bank 0
 //   0x0014  SHIFT1    RW  [5:0] output shift for bank 1
 //   0x0018  CLEAR     WO  [0] clear sticky flags and peak meters
@@ -24,16 +25,46 @@
 //   0x0020  PEAK_IN   RO  max |x| since last clear (24-bit)
 //   0x0024  PEAK_OUT  RO  max |y| since last clear (24-bit)
 //   0x0028  REC_WPTR  RO  frames written since REC last went 0 -> 1 (free running)
+//   0x0040  ECHO_CTRL   RW  [0] EN (also toggled by BTN2), [3:1] head mask (bit 1 = head 1), [4] CANCEL, [5] REV (also toggled by BTN3)
+//                         (Space Echo, see docs/space_echo.md; reset 0x02 = off, head 1)
+//   0x0044  ECHO_DELAY  RW  head-1 delay target, unsigned Q16.16 samples (reset 100 ms)
+//   0x0048  ECHO_FB     RW  [16:0] feedback gain, Q16            (reset 0)
+//   0x004C  ECHO_LEVEL  RW  [16:0] echo volume, Q16              (reset 0)
+//   0x0050  ECHO_INGAIN RW  [16:0] record level, Q16             (reset 65536)
+//   0x0054  ECHO_BASS   RW  [17:0] signed Q16                    (reset 0)
+//   0x0058  ECHO_TREBLE RW  [17:0] signed Q16                    (reset 0)
+//   0x005C  ECHO_WOW    RW  [15:0] wow depth, [31:16] flutter depth, Q8 samples (reset 0)
+//   0x0060  ECHO_DAMP   RW  [15:0] tape lowpass coefficient, Q16 (reset 65535)
+//   0x0064  ECHO_REVERB RW  [16:0] reverb volume (stored only)   (reset 0)
+//   0x0068  ECHO_PEAK   RO  [23:0] max |DAC word| since last read, [24] output mix saturated;
+//                         reading clears
+//   0x006C  ECHO_DRIVE  RO  [24:0] max |record signal| before the tape clip since last read;
+//                         reading clears
 //   0x8000+4*i  COEF[i]  WO  [17:0] signed tap i, written to the INACTIVE bank
 //   0x10000+4*i CAPTURE[i] RO  ring of 2^CAP_LOG2 frames (8192 by default);
 //                         word 2*k = dry x, word 2*k+1 = wet y of frame k
 //                         (24-bit signed, sign-extended), k = frame mod 2^CAP_LOG2.
 //                         Written only while REC = 1. x = selected engine input,
-//                         y = engine output (independent of bypass/mute).
+//                         y = engine output (independent of bypass/mute/echo).
+//
+// Audio path: x -> FIR (y) -> [bypass ? x : y] -> Space Echo -> DAC (mute forces 0).
+// With ECHO_CTRL.EN = 0 the echo is transparent.
 //
 // The codec address pins are driven high (I2C address 0x3B, like PYNQ).
 // Buttons: BTN0 toggles REC (LED0 blinks while recording), BTN1 toggles bypass
-// (LED1 = cab on). LED2 / LED3: input / output level as PWM brightness.
+// (LED1 = cab on), BTN2 toggles the Space Echo EN bit (LED2 = echo on),
+// BTN3 toggles ECHO_CTRL.REV (LED3 = reverb on; the spring reverb is not implemented yet).
+// Level meters as PWM brightness: input on RGB LED LD4, output on RGB LED LD5.
+// RGB LD4 shows the input level (PWM) in a colour that tells the mode:
+//   cab on,     echo off: green      cab on,     echo on: blue
+//   cab bypass, echo off: white      cab bypass, echo on: cyan (G+B)
+// While recording, in the on-phase of LED0's blink LD4 is pure red at full brightness
+// (no PWM); in the off-phase the level colour shows.
+// RGB LD5 shows the output level (DAC word, 0 when muted) with the same colours, but
+// its last mode is REV instead of echo EN:
+//   cab on,     rev off: green       cab on,     rev on: blue
+//   cab bypass, rev off: white       cab bypass, rev on: cyan (G+B)
+// and the same pure red during the REC blink on-phase.
 
 `timescale 1ns / 1ps
 
@@ -43,7 +74,8 @@ module cab_conv_top #(
     parameter HALF  = 20,           // aclk cycles per BCLK half period
     parameter CAP_LOG2 = 13,        // capture ring: 2^CAP_LOG2 frames
     parameter DEB_BITS = 22,        // button debounce: 2^DEB_BITS stable cycles
-    parameter BLINK_BIT = 25        // REC LED blink period 2^(BLINK_BIT+1) cycles (0.55 s)
+    parameter BLINK_BIT = 25,       // REC LED blink period 2^(BLINK_BIT+1) cycles (0.55 s)
+    parameter ECHO_SLEW = 13        // echo tape-speed glide 2^ECHO_SLEW samples (sim: smaller)
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 aclk CLK" *)
     (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s_axi, ASSOCIATED_RESET aresetn" *)
@@ -86,8 +118,16 @@ module cab_conv_top #(
     output wire        led_rec,     // LED0: blinks while recording
     input  wire        btn_byp,     // BTN1: toggle bypass
     output wire        led_cab,     // LED1: cab on (bypass off)
-    output wire        led_lvl_in,  // LED2: input level (PWM)
-    output wire        led_lvl_out  // LED3: output level (PWM)
+    input  wire        btn_echo,    // BTN2: toggle Space Echo EN
+    output wire        led_echo,    // LED2: Space Echo on
+    output wire        led_rgb_r,   // RGB LD4 red (see the LD4 colour table in the header)
+    output wire        led_lvl_in,  // RGB LD4 green
+    output wire        led_rgb_b,   // RGB LD4 blue
+    input  wire        btn_rev,     // BTN3: toggle reverb (ECHO_CTRL[5])
+    output wire        led_rev,     // LED3: reverb on
+    output wire        led5_r,      // RGB LD5 red (output level, colour table in the header)
+    output wire        led5_g,      // RGB LD5 green
+    output wire        led5_b       // RGB LD5 blue
 );
 
     localparam DW        = 24;
@@ -131,6 +171,17 @@ module cab_conv_top #(
     reg [31:0] samples;
     reg [23:0] peak_in, peak_out;
 
+    // Space Echo registers
+    reg [5:0]  e_ctrl;
+    reg [31:0] e_delay, e_wow;
+    reg [16:0] e_fb, e_lvl, e_ing, e_rev;
+    reg [17:0] e_bass, e_treb;
+    reg [15:0] e_damp;
+    reg [23:0] e_peak;
+    reg [24:0] e_drive;
+    reg        e_psat, st_echo;
+    reg        rd_pk, rd_dr;            // peak / drive read: clear
+
     reg        cw_en;
     reg [TBITS-1:0] cw_addr;
     reg signed [CW-1:0] cw_data;
@@ -139,11 +190,18 @@ module cab_conv_top #(
     wire       bank_act, overrun;
 
     // ---------------- buttons (debounced) and LEDs ----------------
-    wire rec_press, byp_press;
+    wire rec_press, byp_press, echo_press, rev_press;
     debounce #(.DEB_BITS(DEB_BITS)) u_deb_rec (.clk(aclk), .rst(rst), .btn(btn_rec), .press(rec_press));
     debounce #(.DEB_BITS(DEB_BITS)) u_deb_byp (.clk(aclk), .rst(rst), .btn(btn_byp), .press(byp_press));
 
-    assign led_cab = !r_bypass;
+    debounce #(.DEB_BITS(DEB_BITS)) u_deb_echo (.clk(aclk), .rst(rst), .btn(btn_echo), .press(echo_press));
+
+    debounce #(.DEB_BITS(DEB_BITS)) u_deb_rev (.clk(aclk), .rst(rst), .btn(btn_rev), .press(rev_press));
+
+    assign led_cab  = !r_bypass;
+    assign led_echo = e_ctrl[0];
+    assign led_rev  = e_ctrl[5];
+    wire lvl_in_pwm, lvl_out_pwm;
     // led_rec is driven below, next to the capture ring (blinks while REC = 1)
 
     // ---------------- AXI write channel ----------------
@@ -160,6 +218,16 @@ module cab_conv_top #(
             r_insel       <= 2'd0;
             r_shift0      <= 6'd16;
             r_shift1      <= 6'd16;
+            e_ctrl        <= 6'h02;
+            e_delay       <= 32'd4800 << 16;
+            e_fb          <= 17'd0;
+            e_lvl         <= 17'd0;
+            e_ing         <= 17'd65536;
+            e_bass        <= 18'd0;
+            e_treb        <= 18'd0;
+            e_wow         <= 32'd0;
+            e_damp        <= 16'd65535;
+            e_rev         <= 17'd0;
             cw_en         <= 1'b0;
             cw_addr       <= {TBITS{1'b0}};
             cw_data       <= {CW{1'b0}};
@@ -174,6 +242,10 @@ module cab_conv_top #(
                 r_rec <= ~r_rec;
             if (byp_press)
                 r_bypass <= ~r_bypass;
+            if (echo_press)
+                e_ctrl[0] <= ~e_ctrl[0];
+            if (rev_press)
+                e_ctrl[5] <= ~e_ctrl[5];
 
             if (s_axi_bvalid && s_axi_bready)
                 s_axi_bvalid <= 1'b0;
@@ -204,6 +276,16 @@ module cab_conv_top #(
                     6'h04: r_shift0 <= s_axi_wdata[5:0];
                     6'h05: r_shift1 <= s_axi_wdata[5:0];
                     6'h06: clr      <= s_axi_wdata[0];
+                    6'h10: e_ctrl   <= s_axi_wdata[5:0];
+                    6'h11: e_delay  <= s_axi_wdata;
+                    6'h12: e_fb     <= s_axi_wdata[16:0];
+                    6'h13: e_lvl    <= s_axi_wdata[16:0];
+                    6'h14: e_ing    <= s_axi_wdata[16:0];
+                    6'h15: e_bass   <= s_axi_wdata[17:0];
+                    6'h16: e_treb   <= s_axi_wdata[17:0];
+                    6'h17: e_wow    <= s_axi_wdata;
+                    6'h18: e_damp   <= s_axi_wdata[15:0];
+                    6'h19: e_rev    <= s_axi_wdata[16:0];
                     default: ;
                     endcase
                 end
@@ -224,8 +306,12 @@ module cab_conv_top #(
             s_axi_rdata   <= 32'd0;
             cap_wait      <= 1'b0;
             cap_sel       <= 1'b0;
+            rd_pk         <= 1'b0;
+            rd_dr         <= 1'b0;
         end else begin
             s_axi_arready <= 1'b0;
+            rd_pk         <= 1'b0;
+            rd_dr         <= 1'b0;
             if (s_axi_rvalid && s_axi_rready)
                 s_axi_rvalid <= 1'b0;
 
@@ -252,7 +338,7 @@ module cab_conv_top #(
                     6'h01: s_axi_rdata <= PARAMS_WORD;
                     6'h02: s_axi_rdata <= {25'd0, r_rec, r_left_only, r_bank,
                                            r_insel, r_mute, r_bypass};
-                    6'h03: s_axi_rdata <= {28'd0, overrun, st_out_clip,
+                    6'h03: s_axi_rdata <= {27'd0, st_echo, overrun, st_out_clip,
                                            st_in_clip, bank_act};
                     6'h04: s_axi_rdata <= {26'd0, r_shift0};
                     6'h05: s_axi_rdata <= {26'd0, r_shift1};
@@ -260,6 +346,18 @@ module cab_conv_top #(
                     6'h08: s_axi_rdata <= {8'd0, peak_in};
                     6'h09: s_axi_rdata <= {8'd0, peak_out};
                     6'h0A: s_axi_rdata <= rec_wptr;
+                    6'h10: s_axi_rdata <= {26'd0, e_ctrl};
+                    6'h11: s_axi_rdata <= e_delay;
+                    6'h12: s_axi_rdata <= {15'd0, e_fb};
+                    6'h13: s_axi_rdata <= {15'd0, e_lvl};
+                    6'h14: s_axi_rdata <= {15'd0, e_ing};
+                    6'h15: s_axi_rdata <= {14'd0, e_bass};
+                    6'h16: s_axi_rdata <= {14'd0, e_treb};
+                    6'h17: s_axi_rdata <= e_wow;
+                    6'h18: s_axi_rdata <= {16'd0, e_damp};
+                    6'h19: s_axi_rdata <= {15'd0, e_rev};
+                    6'h1A: begin s_axi_rdata <= {7'd0, e_psat, e_peak}; rd_pk <= 1'b1; end
+                    6'h1B: begin s_axi_rdata <= {7'd0, e_drive};        rd_dr <= 1'b1; end
                     default: s_axi_rdata <= 32'd0;
                     endcase
                 end
@@ -310,6 +408,23 @@ module cab_conv_top #(
     always @(posedge aclk)
         if (frame_tick) x_dly <= x_sel;
 
+    // Space Echo: s = what used to go to the DAC (cab output, or dry in bypass)
+    wire signed [DW-1:0] echo_s = r_bypass ? x_dly : y;
+    wire signed [DW-1:0] echo_out;
+    wire                 echo_done, echo_sat, echo_miss;
+    wire        [24:0]   echo_rabs;
+
+    tape_echo #(.SLEW(ECHO_SLEW)) u_echo (
+        .clk(aclk), .rst(rst), .tick(frame_tick),
+        .start(y_done), .s_in(echo_s),
+        .en(e_ctrl[0]), .mask(e_ctrl[3:1]), .cancel(e_ctrl[4]),
+        .delay(e_delay), .fb(e_fb), .level(e_lvl), .ingain(e_ing),
+        .bass(e_bass), .treble(e_treb), .wow(e_wow[15:0]), .flut(e_wow[31:16]),
+        .damp(e_damp),
+        .busy(), .done(echo_done), .out(echo_out), .out_sat(echo_sat),
+        .r_abs(echo_rabs), .miss(echo_miss)
+    );
+
     function [DW-1:0] absval;
         input signed [DW-1:0] v;
         begin
@@ -324,21 +439,22 @@ module cab_conv_top #(
 
     // meters run one cycle behind the audio path (registered |x|, |y|)
     // to keep input select + abs + compare out of a single clock cycle
-    reg [DW-1:0] abs_x, abs_y;
-    reg          m_in, m_out, m_out_sat, m_y;
+    reg [DW-1:0] abs_x, abs_y, abs_o;
+    reg          m_in, m_out, m_out_sat, m_e;
     always @(posedge aclk) begin
         abs_x     <= absval(x_sel);
         abs_y     <= absval(y);
         m_in      <= frame_tick && !rst;
         m_out     <= y_done && !r_mute && !r_bypass && !rst;
         m_out_sat <= y_sat;
-        m_y       <= y_done && !rst;
+        abs_o     <= absval(echo_out);
+        m_e       <= echo_done && !rst;
     end
 
-    // level LEDs: input, and what actually goes to the DAC (dry in bypass, 0 when muted)
-    level_led u_led_in (.clk(aclk), .rst(rst), .valid(m_in), .level(abs_x), .led(led_lvl_in));
-    level_led u_led_out (.clk(aclk), .rst(rst), .valid(m_y),
-                         .level(r_mute ? {DW{1'b0}} : r_bypass ? abs_x : abs_y), .led(led_lvl_out));
+    // level LEDs: input, and what actually goes to the DAC (after the echo, 0 when muted)
+    level_led u_led_in (.clk(aclk), .rst(rst), .valid(m_in), .level(abs_x), .led(lvl_in_pwm));
+    level_led u_led_out (.clk(aclk), .rst(rst), .valid(m_e),
+                         .level(r_mute ? {DW{1'b0}} : abs_o), .led(lvl_out_pwm));
 
     always @(posedge aclk) begin
         if (rst) begin
@@ -349,12 +465,36 @@ module cab_conv_top #(
             samples     <= 32'd0;
             peak_in     <= 24'd0;
             peak_out    <= 24'd0;
+            e_peak      <= 24'd0;
+            e_drive     <= 25'd0;
+            e_psat      <= 1'b0;
+            st_echo     <= 1'b0;
         end else begin
             if (clr) begin
                 st_in_clip  <= 1'b0;
                 st_out_clip <= 1'b0;
+                st_echo     <= 1'b0;
                 peak_in     <= 24'd0;
                 peak_out    <= 24'd0;
+            end
+
+            if (echo_miss)
+                st_echo <= 1'b1;
+
+            // echo meters: a read clears them (a sample landing in the same cycle is kept)
+            if (rd_pk) begin
+                e_peak <= 24'd0;
+                e_psat <= 1'b0;
+            end
+            if (rd_dr)
+                e_drive <= 25'd0;
+            if (m_e) begin
+                if (!r_mute && (rd_pk ? abs_o > 24'd0 : abs_o > e_peak))
+                    e_peak <= abs_o;
+                if (echo_sat)
+                    e_psat <= 1'b1;
+                if (rd_dr ? echo_rabs > 25'd0 : echo_rabs > e_drive)
+                    e_drive <= echo_rabs;
             end
 
             if (frame_tick)
@@ -374,16 +514,13 @@ module cab_conv_top #(
                     peak_out <= abs_y;
             end
 
-            if (y_done) begin
+            if (echo_done) begin
                 if (r_mute) begin
                     tx_l <= {DW{1'b0}};
                     tx_r <= {DW{1'b0}};
-                end else if (r_bypass) begin
-                    tx_l <= x_dly;
-                    tx_r <= x_dly;
                 end else begin
-                    tx_l <= y;
-                    tx_r <= r_left_only ? x_dly : y;
+                    tx_l <= echo_out;
+                    tx_r <= r_left_only ? x_dly : echo_out;
                 end
             end
         end
@@ -408,6 +545,14 @@ module cab_conv_top #(
             blink <= blink + 1'b1;
     end
     assign led_rec = r_rec && !blink[BLINK_BIT];
+    wire lvl_in_c = lvl_in_pwm && !led_rec;
+    assign led_rgb_r  = led_rec || (lvl_in_c && r_bypass && !e_ctrl[0]);
+    assign led_lvl_in = lvl_in_c && (!e_ctrl[0] || r_bypass);
+    assign led_rgb_b  = lvl_in_c && (e_ctrl[0] || r_bypass);
+    wire lvl_out_c = lvl_out_pwm && !led_rec;
+    assign led5_r = led_rec || (lvl_out_c && r_bypass && !e_ctrl[5]);
+    assign led5_g = lvl_out_c && (!e_ctrl[5] || r_bypass);
+    assign led5_b = lvl_out_c && (e_ctrl[5] || r_bypass);
 
     always @(posedge aclk) begin
         r_rec_q <= r_rec;

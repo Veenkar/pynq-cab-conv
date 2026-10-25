@@ -45,6 +45,51 @@ ID_VALUE = 0x43414256
 
 INPUT_SEL = {"left": 0, "right": 1, "mix": 2}
 
+# Space Echo (rtl/tape_echo.v), see docs/space_echo.md
+REG_ECHO_CTRL, REG_ECHO_DELAY, REG_ECHO_FB, REG_ECHO_LEVEL = 0x40, 0x44, 0x48, 0x4C
+REG_ECHO_INGAIN, REG_ECHO_BASS, REG_ECHO_TREBLE, REG_ECHO_WOW = 0x50, 0x54, 0x58, 0x5C
+REG_ECHO_DAMP, REG_ECHO_REVERB, REG_ECHO_PEAK, REG_ECHO_DRIVE = 0x60, 0x64, 0x68, 0x6C
+ECHO_EN, ECHO_CANCEL, ECHO_REV = 1 << 0, 1 << 4, 1 << 5     # ECHO_CTRL bits; [3:1] head mask
+ECHO_LOG2 = 15                  # tape buffer 2^15 samples (683 ms)
+FS = 48000
+
+# RE-201 MODE SELECTOR: position -> (playback heads, spring reverb)
+ECHO_MODES = {1: (1,), 2: (2,), 3: (3,), 4: (2, 3),
+              5: (1,), 6: (2,), 7: (3,), 8: (1, 2), 9: (2, 3), 10: (1, 3), 11: (1, 2, 3),
+              12: ()}
+ECHO_KNOBS = dict(input=7.0, wow=3.0, tape=4.0, mode=3, repeat_rate=5.0, intensity=4.0,
+                  echo_volume=6.0, reverb_volume=0.0, bass=5.0, treble=5.0,
+                  power=False, cancel=False, output="H", reverb=False)
+ECHO_OUTPUT_DB = {"H": 0.0, "M": -10.0, "L": -20.0}        # OUTPUT switch -> headphone volume (codec);
+                                                           # H = cab-conv.service --hp-db 0
+
+
+def echo_regs(k):
+    """Panel knobs (0..10, mode 1..12, power/cancel bools; missing keys = ECHO_KNOBS)
+    -> {register offset: value}. Shared by the board server, the GUI and the tests."""
+    k = dict(ECHO_KNOBS, **k)
+    u = lambda name: min(max(float(k[name]), 0.0), 10.0) / 10.0
+    q16 = lambda v, hi=131071: int(min(max(round(v * 65536), 0), hi))
+    s16 = lambda v: int(min(max(round(v * 65536), -131072), 131071)) & 0x3FFFF
+    mode = int(min(max(int(k["mode"]), 1), 12))
+    heads = sum(1 << (h - 1) for h in ECHO_MODES[mode])
+    ctrl = (ECHO_EN if k["power"] else 0) | (heads << 1) | (ECHO_CANCEL if k["cancel"] else 0)
+    ctrl |= ECHO_REV if k["reverb"] else 0             # set from the mode table by the panel/server, BTN3
+    d_ms = 200.0 * (50.0 / 200.0) ** u("repeat_rate")       # head 1: 200 ms (0) .. 50 ms (10)
+    tape_hz = 12000.0 * (2000.0 / 12000.0) ** u("tape")     # loop lowpass: fresh .. worn tape
+    return {
+        REG_ECHO_CTRL: ctrl,
+        REG_ECHO_DELAY: int(round(d_ms * FS / 1000.0 * 65536)),
+        REG_ECHO_FB: q16(1.25 * u("intensity") ** 0.8),
+        REG_ECHO_LEVEL: q16(1.5 * u("echo_volume") ** 2),
+        REG_ECHO_INGAIN: q16(2.0 * u("input") ** 2),
+        REG_ECHO_BASS: s16(2.0 * u("bass") - 1.0),
+        REG_ECHO_TREBLE: s16(2.0 * u("treble") - 1.0),
+        REG_ECHO_WOW: (int(round(u("wow") * 3 * 256)) << 16) | int(round(u("wow") * 40 * 256)),
+        REG_ECHO_DAMP: max(1, min(65535, int(round((1 - math.exp(-2 * math.pi * tape_hz / FS)) * 65536)))),
+        REG_ECHO_REVERB: q16(1.5 * u("reverb_volume") ** 2),
+    }
+
 
 # ----------------------------------------------------------------------
 # IR preparation and fixed point (pure numpy / scipy)
@@ -173,6 +218,89 @@ def _wrap_arr(a, bits):
     m = np.int64(1) << np.int64(bits)
     h = m >> np.int64(1)
     return ((a + h) % m) - h
+
+
+# Reset values of the echo registers (rtl/tape_echo.v inputs after reset)
+ECHO_RESET = {REG_ECHO_CTRL: 0x02, REG_ECHO_DELAY: 4800 << 16, REG_ECHO_FB: 0,
+              REG_ECHO_LEVEL: 0, REG_ECHO_INGAIN: 65536, REG_ECHO_BASS: 0,
+              REG_ECHO_TREBLE: 0, REG_ECHO_WOW: 0, REG_ECHO_DAMP: 65535,
+              REG_ECHO_REVERB: 0}
+_ECHO_SLEW, _ECHO_W_INC, _ECHO_F_INC = 13, 53687, 581601
+_ECHO_HPK, _ECHO_BLK, _ECHO_TLK, _ECHO_C23 = 683, 2111, 18307, 43691
+
+
+def echo_model(s, regs=None, schedule=None, want_drive=False, slew=_ECHO_SLEW):
+    """Bit-exact model of rtl/tape_echo.v (spec: docs/space_echo.md).
+
+    s: int samples (24-bit signed), the signal that goes to the DAC before the echo.
+    regs: {REG_ECHO_* offset: value} overriding the reset values.
+    schedule: [(n, {offset: value}), ...] register changes applied before sample n.
+    slew: speed glide shift (13 in the real design; the testbench uses a smaller one so
+    the glide settles within a short simulation).
+    Returns (out, sat), plus the record-path |r| (ECHO_DRIVE) when want_drive.
+    """
+    n_tape = 1 << ECHO_LOG2
+    m_tape = n_tape - 1
+    tmin, tmax = 16 << 16, ((n_tape - 4) // 3) << 16
+    sat24 = lambda v: YMAX if v > YMAX else YMIN if v < YMIN else v
+    rg = dict(ECHO_RESET)
+    rg.update(regs or {})
+    sched = sorted(schedule or [], key=lambda e: e[0])
+    si = 0
+    mem = [0] * n_tape
+    wp = lp = hz = bl = tl = pw = pf = 0
+    dcur = ECHO_RESET[REG_ECHO_DELAY]
+    n = len(s)
+    out = np.zeros(n, dtype=np.int64)
+    sat = np.zeros(n, dtype=bool)
+    rabs = np.zeros(n, dtype=np.int64)
+    for k in range(n):
+        while si < len(sched) and sched[si][0] <= k:
+            rg.update(sched[si][1])
+            si += 1
+        ctrl = rg[REG_ECHO_CTRL]
+        en, cancel, mask = ctrl & 1, (ctrl >> 4) & 1, (ctrl >> 1) & 7
+        delay, fb_g, lvl = rg[REG_ECHO_DELAY] & 0xFFFFFFFF, rg[REG_ECHO_FB] & 0x1FFFF, rg[REG_ECHO_LEVEL] & 0x1FFFF
+        ing, damp = rg[REG_ECHO_INGAIN] & 0x1FFFF, rg[REG_ECHO_DAMP] & 0xFFFF
+        bass, treb = rg[REG_ECHO_BASS] & 0x3FFFF, rg[REG_ECHO_TREBLE] & 0x3FFFF
+        bass, treb = bass - (1 << 18) if bass >> 17 else bass, treb - (1 << 18) if treb >> 17 else treb
+        wow, flut = rg[REG_ECHO_WOW] & 0xFFFF, (rg[REG_ECHO_WOW] >> 16) & 0xFFFF
+        x = int(s[k])
+        dcur += (delay - dcur) >> slew
+        tri = lambda p: ((p >> 15) if (p >> 15) < 65536 else 131071 - (p >> 15)) - 32768
+        mod = (tri(pw) * wow + tri(pf) * flut) >> 7
+        pw = (pw + _ECHO_W_INC) & 0xFFFFFFFF
+        pf = (pf + _ECHO_F_INC) & 0xFFFFFFFF
+        t_d = min(max(dcur + mod, tmin), tmax)
+        e = 0
+        for h in (1, 2, 3):
+            if not (mask >> (h - 1)) & 1:
+                continue
+            d = h * t_d
+            di, fr = d >> 16, d & 0xFFFF
+            a, b = mem[(wp - di) & m_tape], mem[(wp - di - 1) & m_tape]
+            e += a + (((b - a) * fr) >> 16)
+        e = sat24(e)
+        lp += ((e - lp) * damp) >> 16
+        hz += ((lp - hz) * _ECHO_HPK) >> 16
+        f = sat24(lp - hz)
+        fb = (f * fb_g) >> 16
+        inp = 0 if (cancel or not en) else (x * ing) >> 16
+        r = min(max(inp + fb, -(2**24 - 1)), 2**24 - 1)
+        rabs[k] = abs(r)
+        t = min(max((r * _ECHO_C23) >> 16, -(2**23 - 1)), 2**23 - 1)
+        t2 = (t * (t >> 6)) >> 17
+        t3 = (t * (t2 >> 6)) >> 17
+        y = sat24((3 * t - t3) >> 1)
+        mem[wp] = y if en else 0
+        wp = (wp + 1) & m_tape
+        bl += ((e - bl) * _ECHO_BLK) >> 16
+        tl += ((e - tl) * _ECHO_TLK) >> 16
+        eo = sat24(e + ((bl * bass) >> 16) + ((sat24(e - tl) * treb) >> 16))
+        o = x + ((eo * lvl) >> 16) if en else x
+        sat[k] = o > YMAX or o < YMIN
+        out[k] = sat24(o)
+    return (out, sat, rabs) if want_drive else (out, sat)
 
 
 # ----------------------------------------------------------------------
