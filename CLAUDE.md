@@ -20,6 +20,10 @@ This file is for working on the code.
   plain `sudo python3` fails with "No Devices Found"). `import pynq` takes ~10 s on the board.
 - Each `CabConv(...)` with `download=True` reloads the bitstream and wipes the IR; use
   `download=False` to attach to a running overlay. PROG button / power cycle also clears the PL.
+- **Never reload the bitstream while anything polls the registers** (status.py, echo_server.py,
+  record.py, meter.py): an AXI read during PL reprogramming hangs the bus and freezes the board (needs
+  a power cycle). The helper units have `PartOf=cab-conv.service`, so `systemctl restart cab-conv`
+  stops them first; stop hand-started copies and wait for them to exit before a reload.
 - Analog: board USB to the same PC as the audio interface gives a ground loop (~-52 dBFS hum at
   LINE IN); power the board separately (Wi-Fi via USB RTL8188CUS works, `rtl8192cu` driver).
   Remaining floor (~-69 dBFS at HP out, 0 dB) is board-side analog; keep FPGA output near -3 dBFS
@@ -36,8 +40,10 @@ rtl/cab_conv_top.v   AXI4-Lite regs, input select, bypass/mute, peak/clip meters
 rtl/fir_engine.v     multi-lane time-multiplexed FIR, ping-pong coef banks
 rtl/i2s_master.v     I2S master (codec is slave), 64 BCLK/frame, 24-bit in 32-bit slots
 rtl/clk_fwd.v        ODDR clock forwarding (plain flop under `SIMULATION`)
-rtl/debounce.v       button sync + debounce (BTN0 -> REC, BTN1 -> bypass; LED0 blinks while REC, LED1 = !bypass)
-rtl/level_led.v      peak envelope -> PWM LED (LED2 = input, LED3 = DAC output level), 6 dB per brightness doubling
+rtl/debounce.v       button sync + debounce (BTN0 -> REC, BTN1 -> bypass, BTN2 -> echo EN, BTN3 -> ECHO_CTRL[5] REV; LED0 blinks while REC, LED1 = !bypass, LED2 = echo on, LED3 = rev on)
+rtl/tape_echo.v      Space Echo (RE-201 style tape echo): sequential engine, 1 shared DSP multiplier, 2^15x24 BRAM tape,
+                     ~50 cycles/sample, bit-exact with `cab_conv.echo_model` (spec docs/space_echo.md); runs after the FIR, before the DAC
+rtl/level_led.v      peak envelope -> PWM LED (RGB LD4 = input, RGB LD5 = DAC output level; colours show cab/bypass x echo EN (LD4) or REV (LD5)), 6 dB per brightness doubling
 sim/tb_cab_conv.v    AXI BFM + behavioural ADAU1761 I2S slave
 sim/run_sim.py       stimulus gen, runs iverilog/vvp, bit-exact check vs Python model
 vivado/build.tcl     project + block design + bitstream, copies .bit/.hwh to build/
@@ -52,6 +58,9 @@ sw/board/            helper scripts used on the board in ~xilinx/cab_conv/ (run 
                      oled.py (SSD1306 128x32 driver over /dev/i2c-0 + 5x7 font + Canvas; `oled.py test [--ascii]`),
                      status.py + status.service (OLED daemon: mode, REC time, IR name from current_ir.txt written by
                      autostart.py/load_ir.py, peak meters; reads regs only, `install_autostart.sh --oled`),
+                     echo_server.py + echo.service (Space Echo TCP server, port 5201, JSON lines, state in
+                     echo_state.json; `--fake` for PC; installed by default, `--no-echo` skips; PC panel: sw/echo_panel.py
+                     [--demo], presets sw/echo_presets.json, see docs/space_echo.md),
                      autostart.py + cab-conv.service (boot start, After=bootpy.service which loads base.bit),
                      install_autostart.sh [--fast|--restore] (installs the unit; --fast trims /boot/boot.py and
                      disables jupyter + clear_pl_statefile, which has Requires=jupyter),
@@ -98,6 +107,9 @@ Sim needs `iverilog`, `numpy`, `scipy`. Compile flags used: `-g2005 -DSIMULATION
 Documented at the top of `rtl/cab_conv_top.v` and in README.md / README_PL.md. Coefs at `0x8000 + 4*i`, write-only.
 AXI window is 128 KiB. Recording: `CTRL[6]` REC (RW, BTN0 toggles, LED0 blinks while set), `0x28` REC_WPTR (RO, frames since
 REC rose), `0x10000 + 4*i` CAPTURE ring (RO, 8192 frames, word 2k = dry x, 2k+1 = wet y, sign-extended 24-bit).
+Space Echo: regs `0x40..0x6C` (ECHO_*, `ECHO_PEAK`/`ECHO_DRIVE` clear on read), `STATUS[4]` echo overrun; tx = echo output
+(EN = 0 is bit-identical to no echo); the capture ring still records the cab output y. The sim overrides the glide
+shift (`ECHO_SLEW` param, 5 in the TB, 13 in hardware) so echoes settle within a short run.
 `record.py` attaches by raw MMIO (no CabConv, codec not reconfigured) and writes `~xilinx/cab_conv/rec/*.wav`.
 If you change the map, update RTL header, both README tables, `sw/cab_conv.py` constants and the testbench together.
 

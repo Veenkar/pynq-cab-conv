@@ -153,6 +153,7 @@ w `ExecStart` w `/etc/systemd/system/cab-conv.service`.
 cd ~xilinx/cab_conv
 sudo ./install_autostart.sh            # autostart + nagrywanie BTN0 (IR gotowa ok. 160 s po włączeniu)
 sudo ./install_autostart.sh --fast     # + szybszy start (IR gotowa ok. 85 s, ok. 50 s z eth-disable.sh)
+sudo ./install_autostart.sh --no-echo  # bez echo.service (serwer Space Echo, patrz Panel Space Echo)
 sudo ./install_autostart.sh --no-rec   # bez record.service (BTN0 przełącza wtedy tylko REC/LED0)
 sudo ./install_autostart.sh --oled     # + status.service (wyświetlacz OLED, patrz Wyświetlacz stanu)
 sudo ./install_autostart.sh --restore  # cofa wszystko, ustawienia PYNQ jak w obrazie
@@ -205,7 +206,9 @@ skryptu; program widzi i może zmieniać te same bity `CTRL`):
 |---|---|---|
 | BTN0 | włącza/wyłącza nagrywanie (`CTRL[6]`, zob. [Nagrywanie](#nagrywanie)) | LED0 miga (ok. 1,8 Hz) podczas nagrywania |
 | BTN1 | włącza/wyłącza bypass (`CTRL[0]`): sygnał suchy zamiast kolumny | LED1 świeci, gdy kolumna działa (bypass wyłączony, stan po włączeniu) |
-| | | LED2 / LED3: poziom wejścia / wyjścia; jasność podwaja się co 6 dB (ciemno poniżej ok. -48 dBFS), opadanie ok. 85 ms |
+| BTN2 | włącza/wyłącza Space Echo (`ECHO_CTRL[0]`) | LED2 świeci, gdy echo jest włączone |
+| BTN3 | włącza/wyłącza pogłos (`ECHO_CTRL[5]`; pogłos sprężynowy nie jest jeszcze zaimplementowany, więc brak wpływu na dźwięk) | LED3 świeci, gdy pogłos jest włączony |
+| | | LED-y RGB LD4 / LD5: poziom wejścia / wyjścia (kolor LD4: kolumna włączona = zielony (echo wył.) / niebieski (echo wł.); bypass = biały (echo wył.) / cyjan (echo wł.); LD5 tak samo, ale z pogłosem zamiast echa; podczas nagrywania oba migają czerwonym na pełną jasność równo z LED0); jasność podwaja się co 6 dB (ciemno poniżej ok. -48 dBFS), opadanie ok. 85 ms |
 
 ## Podłączenie wzmacniacza: ważne
 
@@ -243,7 +246,7 @@ Praktyczne uwagi z testów z interfejsem audio:
 | 0x0000 | ID | `0x43414256` ("CABV") |
 | 0x0004 | PARAMS | [15:0] liczba tapów, [23:16] log2 tapów na tor, [31:24] tory |
 | 0x0008 | CTRL | [0] bypass (BTN1 przełącza), [1] mute, [3:2] wejście (0 L, 1 R, 2 (L+R)/2), [4] bank, [5] mokry tylko na L, [6] REC (nagrywanie; BTN0 przełącza) |
-| 0x000C | STATUS | [0] aktywny bank, [1] przester wejścia, [2] przester wyjścia, [3] overrun |
+| 0x000C | STATUS | [0] aktywny bank, [1] przester wejścia, [2] przester wyjścia, [3] overrun, [4] overrun echa |
 | 0x0010 | SHIFT0 | przesunięcie dla banku 0 |
 | 0x0014 | SHIFT1 | przesunięcie dla banku 1 |
 | 0x0018 | CLEAR | [0] kasuje flagi i mierniki szczytowe |
@@ -251,6 +254,18 @@ Praktyczne uwagi z testów z interfejsem audio:
 | 0x0020 | PEAK_IN | max \|x\| od ostatniego CLEAR |
 | 0x0024 | PEAK_OUT | max \|y\| od ostatniego CLEAR |
 | 0x0028 | REC_WPTR | liczba klatek zapisanych od ostatniego wzrostu REC (tylko odczyt, 32 bity, zerowana zboczem narastającym REC) |
+| 0x0040 | ECHO_CTRL | [0] EN (BTN2 przełącza), [3:1] maska głowic (bit 1 = głowica 1), [4] CANCEL, [5] REV (BTN3 przełącza; zarezerwowany, na razie bez wpływu na dźwięk); reset 0x02 |
+| 0x0044 | ECHO_DELAY | opóźnienie głowicy 1, Q16.16 próbek bez znaku (reset 100 ms) |
+| 0x0048 | ECHO_FB | [16:0] sprzężenie zwrotne, Q16 (0 .. 2,0) |
+| 0x004C | ECHO_LEVEL | [16:0] głośność echa, Q16 |
+| 0x0050 | ECHO_INGAIN | [16:0] poziom nagrywania, Q16 (reset 1,0) |
+| 0x0054 | ECHO_BASS | [17:0] Q16 ze znakiem, 0 = płasko |
+| 0x0058 | ECHO_TREBLE | [17:0] Q16 ze znakiem, 0 = płasko |
+| 0x005C | ECHO_WOW | [15:0] głębokość wow, [31:16] głębokość flutter, Q8 próbek |
+| 0x0060 | ECHO_DAMP | [15:0] współczynnik dolnoprzepustowy taśmy, Q16 (reset 65535) |
+| 0x0064 | ECHO_REVERB | [16:0] głośność pogłosu (zarezerwowany, tylko zapamiętywany) |
+| 0x0068 | ECHO_PEAK | tylko odczyt, odczyt kasuje: [23:0] max \|słowa DAC\|, [24] mieszanka echa nasyciła się |
+| 0x006C | ECHO_DRIVE | tylko odczyt, odczyt kasuje: [24:0] max \|sygnału nagrywanego\| przed ogranicznikiem taśmy |
 | 0x8000 + 4i | COEF[i] | tap i (18 bit ze znakiem), zapis do nieaktywnego banku |
 | 0x10000 + 4i | CAPTURE[i] | bufor kołowy 8192 klatek (170,7 ms), tylko odczyt; słowo 2k = suchy x, 2k+1 = mokry y klatki k, 24 bity ze znakiem rozszerzone do 32; klatka n leży pod k = n mod 8192 |
 
@@ -330,6 +345,33 @@ i ponawia próby z rosnącym opóźnieniem (od 1 s do 30 s). Opcje: `--bus`,
 `meter.py` zeruje rejestry szczytów przy każdym odświeżeniu, więc nie uruchamiaj
 ich jednocześnie. Nazwa IR jest czytana z `~xilinx/cab_conv/current_ir.txt`,
 który zapisują `autostart.py` i `load_ir.py` przy ładowaniu IR.
+
+## Panel Space Echo
+
+Echo taśmowe ([docs/space_echo.md](docs/space_echo.md)) steruje się z PC panelem
+narysowanym na wzór przedniego panelu Roland RE-201. `echo.service` (domyślnie
+instalowany, `--no-echo` pomija) uruchamia `~xilinx/cab_conv/echo_server.py` na porcie TCP 5201;
+serwer trzyma stan gałek w `~xilinx/cab_conv/echo_state.json` i przywraca go po starcie.
+
+```
+python sw/echo_panel.py --host 192.168.0.31 [--port 5201]   # panel (tkinter, tylko stdlib)
+python sw/echo_panel.py --demo                              # atrapa płytki, bez sprzętu
+sudo -i python3 ~xilinx/cab_conv/echo_server.py             # serwer ręcznie (--fake na PC)
+```
+
+Gałka: przeciąganie w pionie (Shift = dokładnie), kółko myszy, dwuklik = wartość domyślna,
+prawy przycisk = wpisanie wartości. MODE SELECTOR: kliknij pozycję lub przeciągaj dookoła.
+Klawisze: Spacja = POWER, C = ECHO CANCEL, B = bypass kabiny, 1-9 0 - = wybór trybu 1..12.
+Przełącznik suwakowy w polu INSTRUMENT przełącza konwolwer kabiny na bypass, a przełącznik
+H M L w polu OUTPUT ustawia głośność słuchawek (0 / -10 / -20 dB, H = domyślna przy starcie). Presety:
+wbudowane w `sw/echo_presets.json`, własne (pasek stanu, "Save preset...") w
+`~/.cab_echo_presets.json`. Panel sam ponawia połączenie. Serwer tylko czyta mierniki echa
+(bez CLEAR); uruchamiaj jeden panel naraz.
+
+Arytmetyka echa i szczegóły rejestrów są w [docs/space_echo.md](docs/space_echo.md); RTL to
+`rtl/tape_echo.v` (ok. 50 taktów na próbkę, jeden wspólny mnożnik DSP, taśma 2^15 próbek w BRAM),
+a model bitowo dokładny to `echo_model()` w `sw/cab_conv.py`. Przy `ECHO_CTRL.EN = 0` wyjście jest
+bitowo identyczne jak w projekcie bez echa.
 
 ## Rozbudowa
 

@@ -154,6 +154,7 @@ cd ~xilinx/cab_conv
 sudo ./install_autostart.sh            # autostart + BTN0 recorder (IR ready ~160 s after power-on)
 sudo ./install_autostart.sh --fast     # + faster boot (IR ready ~85 s, ~50 s with eth-disable.sh)
 sudo ./install_autostart.sh --no-rec   # without record.service (BTN0 then only toggles REC/LED0)
+sudo ./install_autostart.sh --no-echo   # without echo.service (Space Echo server, see Space Echo panel)
 sudo ./install_autostart.sh --oled     # + status.service (OLED display, see Status display)
 sudo ./install_autostart.sh --restore  # undo everything, back to PYNQ defaults
 ```
@@ -205,7 +206,9 @@ script running; software sees and can change the same `CTRL` bits):
 |---|---|---|
 | BTN0 | toggle recording (`CTRL[6]`, see [Recording](#recording)) | LED0 blinks (~1.8 Hz) while recording |
 | BTN1 | toggle bypass (`CTRL[0]`): dry signal instead of the cab | LED1 on while the cab is active (bypass off, the power-on state) |
-| | | LED2 / LED3: input / output level; brightness doubles every 6 dB (dark below about -48 dBFS), ~85 ms release |
+| BTN2 | toggle the Space Echo on/off (`ECHO_CTRL[0]`) | LED2 on while the echo is on |
+| BTN3 | toggle the reverb on/off (`ECHO_CTRL[5]`; the spring reverb is not implemented yet, so no audio effect) | LED3 on while reverb is on |
+| | | RGB LEDs LD4 / LD5: input / output level (LD4 colour: cab on = green (echo off) / blue (echo on); bypass = white (echo off) / cyan (echo on); LD5 the same with reverb instead of echo; while recording both blink full-brightness red in step with LED0); brightness doubles every 6 dB (dark below about -48 dBFS), ~85 ms release |
 
 ## Connecting the amp: important
 
@@ -243,7 +246,7 @@ Practical notes from testing with an audio interface:
 | 0x0000 | ID | `0x43414256` ("CABV") |
 | 0x0004 | PARAMS | [15:0] number of taps, [23:16] log2 taps per lane, [31:24] lanes |
 | 0x0008 | CTRL | [0] bypass (BTN1 toggles it), [1] mute, [3:2] input (0 L, 1 R, 2 (L+R)/2), [4] bank, [5] wet on L only, [6] REC (recording; BTN0 toggles it) |
-| 0x000C | STATUS | [0] active bank, [1] input clip, [2] output clip, [3] overrun |
+| 0x000C | STATUS | [0] active bank, [1] input clip, [2] output clip, [3] overrun, [4] echo overrun |
 | 0x0010 | SHIFT0 | shift for bank 0 |
 | 0x0014 | SHIFT1 | shift for bank 1 |
 | 0x0018 | CLEAR | [0] clears the flags and peak meters |
@@ -251,6 +254,18 @@ Practical notes from testing with an audio interface:
 | 0x0020 | PEAK_IN | max \|x\| since the last CLEAR |
 | 0x0024 | PEAK_OUT | max \|y\| since the last CLEAR |
 | 0x0028 | REC_WPTR | frames written since REC last went high (read-only, 32-bit, reset on the rising edge of REC) |
+| 0x0040 | ECHO_CTRL | [0] EN (BTN2 toggles it), [3:1] head mask (bit 1 = head 1), [4] CANCEL, [5] REV (BTN3 toggles it; reserved, no audio effect yet); reset 0x02 |
+| 0x0044 | ECHO_DELAY | head-1 delay, unsigned Q16.16 samples (reset 100 ms) |
+| 0x0048 | ECHO_FB | [16:0] feedback, Q16 (0 .. 2.0) |
+| 0x004C | ECHO_LEVEL | [16:0] echo volume, Q16 |
+| 0x0050 | ECHO_INGAIN | [16:0] record level, Q16 (reset 1.0) |
+| 0x0054 | ECHO_BASS | [17:0] signed Q16, 0 = flat |
+| 0x0058 | ECHO_TREBLE | [17:0] signed Q16, 0 = flat |
+| 0x005C | ECHO_WOW | [15:0] wow depth, [31:16] flutter depth, Q8 samples |
+| 0x0060 | ECHO_DAMP | [15:0] tape lowpass coefficient, Q16 (reset 65535) |
+| 0x0064 | ECHO_REVERB | [16:0] reverb volume (reserved, stored only) |
+| 0x0068 | ECHO_PEAK | read-only, read clears: [23:0] max \|DAC word\|, [24] echo mix saturated |
+| 0x006C | ECHO_DRIVE | read-only, read clears: [24:0] max \|record signal\| before the tape clip |
 | 0x8000 + 4i | COEF[i] | tap i (18-bit signed), written to the inactive bank |
 | 0x10000 + 4i | CAPTURE[i] | read-only ring of 8192 frames (170.7 ms); word 2k = dry x, 2k+1 = wet y of frame k, 24-bit signed, sign-extended to 32 bits; frame n is stored at k = n mod 8192 |
 
@@ -329,6 +344,32 @@ retries with a growing delay (1 s up to 30 s). Options: `--bus`, `--addr`,
 peak registers on every refresh, so do not run both at the same time. The IR
 name is read from `~xilinx/cab_conv/current_ir.txt`, which `autostart.py` and
 `load_ir.py` write when they load an IR.
+
+## Space Echo panel
+
+The tape echo ([docs/space_echo.md](docs/space_echo.md)) is controlled from the PC with a
+panel drawn after the Roland RE-201 front panel. `echo.service` (installed by default,
+`--no-echo` skips it) runs `~xilinx/cab_conv/echo_server.py` on TCP port 5201; it keeps the
+knob state in `~xilinx/cab_conv/echo_state.json` and re-applies it after boot.
+
+```
+python sw/echo_panel.py --host 192.168.0.31 [--port 5201]   # the panel (tkinter, stdlib only)
+python sw/echo_panel.py --demo                              # fake board, no hardware needed
+sudo -i python3 ~xilinx/cab_conv/echo_server.py             # the server by hand (--fake on a PC)
+```
+
+Drag a knob vertically (Shift = fine), mouse wheel, double-click = default, right-click = type
+a value. MODE SELECTOR: click a position or drag around it. Keys: Space = POWER, C = ECHO
+CANCEL, B = cab bypass, 1-9 0 - = select mode 1..12. The slide switch in the INSTRUMENT box
+switches the cab convolver to bypass; the H M L switch in the OUTPUT box sets the headphone
+volume (0 / -10 / -20 dB, H = the boot default). Presets: built-in ones in `sw/echo_presets.json`, your own
+(status bar, "Save preset...") in `~/.cab_echo_presets.json`. The panel reconnects by itself.
+The server only reads the echo meters (no CLEAR); run just one panel at a time.
+
+The echo's arithmetic and the register details are in [docs/space_echo.md](docs/space_echo.md);
+the RTL is `rtl/tape_echo.v` (about 50 clock cycles per sample, one shared DSP multiplier, a
+2^15-sample tape in BRAM) and the bit-exact model is `echo_model()` in `sw/cab_conv.py`. With
+`ECHO_CTRL.EN = 0` the output is bit-identical to the design without the echo.
 
 ## Extensions
 
