@@ -1,9 +1,12 @@
-# systemd unit: recorder daemon (dry L / wet R to WAV on REC, BTN0 toggles).
+# systemd unit: recorder daemon (dry + wet mono WAV pair on REC, BTN0 toggles).
 # Install: sudo ./install_autostart.sh (default; --no-rec skips it)
 # Takes are written to /home/xilinx/cab_conv/rec/.
 [Unit]
-Description=Cab convolver recorder (BTN0 / CTRL[6] -> WAV)
+Description=Cab convolver recorder (BTN0 / CTRL[6] -> dry + wet WAV)
 After=cab-conv.service
+# stopped before and restarted after any restart of cab-conv: register reads while the PL is being
+# reprogrammed hang the AXI bus and freeze the board
+PartOf=cab-conv.service
 
 [Service]
 Type=simple

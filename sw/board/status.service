@@ -1,9 +1,12 @@
-# systemd unit: OLED status display (mode, REC time, IR name, peak meters).
+# systemd unit: OLED status display (cab / echo / reverb tags, REC time, IR name, peak meters).
 # Install: sudo ./install_autostart.sh --oled
 # Needs the SSD1306 128x32 module on /dev/i2c-0 (Arduino SCL/SDA pins), see README.
 [Unit]
 Description=Cab convolver OLED status display
 After=cab-conv.service
+# stopped before and restarted after any restart of cab-conv: register reads while the PL is being
+# reprogrammed hang the AXI bus and freeze the board
+PartOf=cab-conv.service
 
 [Service]
 Type=simple

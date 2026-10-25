@@ -1,4 +1,4 @@
-# Status display daemon: shows mode, REC time, IR name and input/output peak meters
+# Status display daemon: shows cab on, REC time, IR name, echo / reverb on and input/output peak meters
 # on a 128x32 SSD1306 OLED (see oled.py). Reads cab_conv registers only (overlay is
 # not reloaded, codec and IR untouched).
 #   sudo -i python3 ~xilinx/cab_conv/status.py [--bus 0] [--addr 0x3C] [--rate 8] [--flip]
@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 sys.path.insert(0, "/home/xilinx/cab_conv")
 from oled import SSD1306, Canvas, W
 from cab_conv import (MMIO_RANGE, REG_ID, ID_VALUE, REG_CTRL, REG_STATUS, REG_CLEAR,
-                      REG_PEAK_IN, REG_PEAK_OUT, REG_REC_WPTR)
+                      REG_PEAK_IN, REG_PEAK_OUT, REG_REC_WPTR, REG_ECHO_CTRL, ECHO_EN, ECHO_REV)
 
 FS = 48000
 FULL = 8388607.0
@@ -27,25 +27,36 @@ def db(v):
 
 
 def render(s):
-    """s: dict(overlay, bypass, mute, rec, rec_s, blink, ir, in_db, out_db, in_clip, out_clip)
+    """s: dict(overlay, bypass, mute, rec, rec_s, blink, ir, echo, rev, in_db, out_db, in_clip, out_clip)
     -> Canvas."""
     c = Canvas()
     if not s["overlay"]:
         c.text(6, 9, "no overlay", scale=2)
         return c
-    # one text line: mode + IR name, or mode + REC timer while recording
-    mode = "BYPASS" if s["bypass"] else "CAB"
-    if s["mute"]:
-        mode += " MUTE"
+    # one text line: inverted CAB tag (only while the cab is active, gone in bypass), then the IR name
+    # (or the REC timer while recording); inverted REV and ECHO tags at fixed places on the right while
+    # the reverb (BTN3) / the tape echo (BTN2) is on
+    echo, rev = s.get("echo", False), s.get("rev", False)
+    if not s["bypass"]:
+        c.rect(0, 0, 19, 7)
+        c.text(1, 0, "CAB", on=False)
     if s["rec"]:
         m, sec = divmod(int(s["rec_s"]), 60)
-        c.text(0, 0, mode)
-        c.text(74, 0, "REC")
-        if s["blink"]:
-            c.rect(94, 2, 4, 4)
-        c.text(100, 0, "%02d:%02d" % (min(m, 99), sec))
+        if s["blink"]:                              # blinking box: dot + REC, inverted
+            c.rect(21, 0, 27, 7)
+            c.rect(23, 2, 3, 3, on=False)
+            c.text(29, 0, "REC", on=False)
+        c.text(51, 0, "%02d:%02d" % (min(m, 99), sec))
+        if s["mute"] and not rev:
+            c.text(84, 0, "M")
     else:
-        c.text(0, 0, (mode + " " + s["ir"])[:21])
+        c.text(22, 0, (("MUTE " if s["mute"] else "") + s["ir"])[:10 if rev else 13 if echo else 17])
+    if rev:
+        c.rect(W - 44, 0, 19, 7)
+        c.text(W - 43, 0, "REV", on=False)
+    if echo:
+        c.rect(W - 24, 0, 24, 7)
+        c.text(W - 23, 0, "ECHO", on=False)
     # two 11 px meters (input above output, 2 px apart), 2 px border, -60..0 dBFS, tick at -12 dB;
     # a clipping channel's meter is shown inverted
     for y, d, clip in ((8, s["in_db"], s["in_clip"]), (21, s["out_db"], s["out_clip"])):
@@ -86,9 +97,14 @@ class Status:
             if st & (2 << i):
                 self.clip_t[i] = now
         rec = bool(ctrl & 0x40)
+        wptr = self.mm.read(REG_REC_WPTR) if rec else 0
+        ectrl = self.mm.read(REG_ECHO_CTRL)
+        # same phase as the REC LED: on for the first half of each 2^26-cycle period (0.55 s) since REC
+        # rose; frames since REC rose = REC_WPTR, 2560 aclk cycles per frame
+        blink = not (wptr * 2560 >> 25) & 1
         return dict(overlay=True, bypass=bool(ctrl & 1), mute=bool(ctrl & 2), rec=rec,
-                    rec_s=self.mm.read(REG_REC_WPTR) / FS if rec else 0, blink=int(now * 2) % 2 == 0,
-                    ir=self._ir_name(now), in_db=self.disp[0], out_db=self.disp[1],
+                    rec_s=wptr / FS, blink=blink,
+                    ir=self._ir_name(now), echo=bool(ectrl & ECHO_EN), rev=bool(ectrl & ECHO_REV), in_db=self.disp[0], out_db=self.disp[1],
                     in_clip=now - self.clip_t[0] < CLIP_HOLD_S, out_clip=now - self.clip_t[1] < CLIP_HOLD_S)
 
 
