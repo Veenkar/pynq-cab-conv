@@ -38,7 +38,7 @@ CTRL_BYPASS = 1 << 0            # CTRL[0]: bypass (also toggled by BTN1, LED1 = 
 REC_WPTR = REG_REC_WPTR
 CTRL_REC = 1 << 6               # CTRL[6]: recording (also toggled by BTN0)
 COEF_BASE = 0x8000
-CAP_BASE = 0x10000              # capture ring: word 2k = dry x, 2k+1 = wet y
+CAP_BASE = 0x10000              # capture ring: word 2k = dry x, 2k+1 = wet (final DAC word incl. echo/reverb/mute)
 CAP_FRAMES = 8192
 MMIO_RANGE = 0x20000            # 128 KiB AXI window
 ID_VALUE = 0x43414256
@@ -444,7 +444,7 @@ class CaptureMixin:
     def read_capture(self, rptr):
         """Read frames rptr..wptr from the capture ring.
 
-        Returns (new_rptr, int32 array (n, 2)); column 0 = dry, 1 = wet,
+        Returns (new_rptr, int32 array (n, 2)); column 0 = dry, 1 = wet (final DAC word),
         sign-extended 24-bit values. rptr counts frames since REC started.
         Raises CaptureOverflow if more than CAP_FRAMES frames accumulated
         (or were overwritten while reading); resync with e.wptr.

@@ -246,13 +246,13 @@ Practical notes from testing with an audio interface:
 | 0x0000 | ID | `0x43414256` ("CABV") |
 | 0x0004 | PARAMS | [15:0] number of taps, [23:16] log2 taps per lane, [31:24] lanes |
 | 0x0008 | CTRL | [0] bypass (BTN1 toggles it), [1] mute, [3:2] input (0 L, 1 R, 2 (L+R)/2), [4] bank, [5] wet on L only, [6] REC (recording; BTN0 toggles it) |
-| 0x000C | STATUS | [0] active bank, [1] input clip, [2] output clip, [3] overrun, [4] echo overrun, [5] spring reverb overrun (sticky; 4 and 5 should never be 1) |
+| 0x000C | STATUS | [0] active bank, [1] input clip, [2] output clip (final DAC word saturated or \|word\| >= 0x7E0000; muted output not counted), [3] overrun, [4] echo overrun, [5] spring reverb overrun (sticky; 4 and 5 should never be 1) |
 | 0x0010 | SHIFT0 | shift for bank 0 |
 | 0x0014 | SHIFT1 | shift for bank 1 |
 | 0x0018 | CLEAR | [0] clears the flags and peak meters |
 | 0x001C | SAMPLES | sample counter |
 | 0x0020 | PEAK_IN | max \|x\| since the last CLEAR |
-| 0x0024 | PEAK_OUT | max \|y\| since the last CLEAR |
+| 0x0024 | PEAK_OUT | max \|final DAC word\| since the last CLEAR (what is heard: after echo and reverb, muted = not counted) |
 | 0x0028 | REC_WPTR | frames written since REC last went high (read-only, 32-bit, reset on the rising edge of REC) |
 | 0x0040 | ECHO_CTRL | [0] EN (BTN2 toggles it), [3:1] head mask (bit 1 = head 1), [4] CANCEL, [5] REV (BTN3 toggles it; spring reverb input on); reset 0x02 |
 | 0x0044 | ECHO_DELAY | head-1 delay, unsigned Q16.16 samples (reset 100 ms) |
@@ -267,7 +267,7 @@ Practical notes from testing with an audio interface:
 | 0x0068 | ECHO_PEAK | read-only, read clears: [23:0] max \|DAC word\|, [24] echo mix saturated |
 | 0x006C | ECHO_DRIVE | read-only, read clears: [24:0] max \|record signal\| before the tape clip |
 | 0x8000 + 4i | COEF[i] | tap i (18-bit signed), written to the inactive bank |
-| 0x10000 + 4i | CAPTURE[i] | read-only ring of 8192 frames (170.7 ms); word 2k = dry x, 2k+1 = wet y of frame k, 24-bit signed, sign-extended to 32 bits; frame n is stored at k = n mod 8192 |
+| 0x10000 + 4i | CAPTURE[i] | read-only ring of 8192 frames (170.7 ms); word 2k = dry x, 2k+1 = wet (final DAC word) of frame k, 24-bit signed, sign-extended to 32 bits; frame n is stored at k = n mod 8192 |
 
 ## Recording
 
@@ -276,8 +276,10 @@ The board can record the dry input and the convolved output as two mono
 writes both signals into a ring buffer of 8192 frames (170.7 ms) while `CTRL[6]`
 (REC) is set, and the PS drains it over the AXI4-Lite link
 (`CabConv.read_capture`). Dry is the engine input after the input select, wet
-is the engine output (before bypass/mute), and both are aligned to the same
-sample index, so `wet = IR * dry` holds exactly between the two files.
+is exactly the word sent to the headphone output (cab or bypass, plus Space
+Echo and spring reverb as switched on, 0 while muted), and both are aligned to
+the same sample index. With echo and reverb off and no mute, `wet = IR * dry`
+holds exactly between the two files.
 
 REC is switched by software (`cab.rec_start()` / `cab.rec_stop()`, or the
 `--start` option of `record.py`) or by a press of **BTN0** (debounced, toggles).

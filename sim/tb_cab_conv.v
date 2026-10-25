@@ -417,9 +417,27 @@ module tb_cab_conv;
     // Space Echo program: echo_cmd.hex holds 4 words per command {op, a, b, tag}
     //   0 write reg a <- b        1 wait b frames        2 read reg a, log "RD tag S a value"
     //   3 log "EVT tag S"         4 read reg a, expect b 5 sync: 40 cycles after the next echo
-    //   F end                     done (all register writes then land in the next frame)
+    //   6 dump the capture ring to cap_e<k>.txt (k = 0, 1, ...; REC should be off)
+//   F end                     done (all register writes then land in the next frame)
     // S = dut.samples = frames ticked so far; run_sim.py maps it to a sample index.
     // ------------------------------------------------------------------
+    integer ndump = 0, dk;
+    reg [8*16-1:0] dname;
+    task dump_cap;
+        begin
+            axi_read(17'h0028, r);
+            $sformat(dname, "cap_e%0d.txt", ndump);
+            ndump = ndump + 1;
+            fcap = $fopen(dname, "w");
+            $fdisplay(fcap, "%0d", r);
+            for (dk = 0; dk < CAPN; dk = dk + 1) begin
+                axi_read(17'h10000 + 8*dk, r);   $fwrite(fcap, "%0d ", $signed(r));
+                axi_read(17'h10000 + 8*dk + 4, r); $fdisplay(fcap, "%0d", $signed(r));
+            end
+            $fclose(fcap);
+        end
+    endtask
+
     reg [31:0] ecmd [0:1023];
     reg [31:0] ea, eb, etag, eop;
     integer ep;
@@ -439,6 +457,7 @@ module tb_cab_conv;
                 32'd4: begin axi_read(ea[16:0], r);
                              if (r !== eb) $display("FAIL: reg %0h read %0h, expected %0h", ea, r, eb); end
                 32'd5: begin @(posedge dut.echo_done); repeat (40) @(posedge aclk); end
+                32'd6: dump_cap;
                 default: $display("FAIL: bad echo command %0d", eop);
                 endcase
                 ep = ep + 4;

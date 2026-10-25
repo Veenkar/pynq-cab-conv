@@ -15,7 +15,8 @@
 //                         [6] REC: recording (also toggled by BTN0)
 //   0x000C  STATUS    RO  [0] active bank (applied)
 //                         [1] input clip   (sticky)
-//                         [2] output clip  (sticky)
+//                         [2] output clip  (sticky): the final DAC word (after echo + reverb,
+//                             dry in bypass; muted = 0, not counted) saturated or |word| >= 0x7E0000
 //                         [3] engine overrun (sticky, should never be 1)
 //                         [4] echo overrun (sticky, should never be 1)
 //                         [5] spring reverb overrun (sticky, should never be 1)
@@ -24,7 +25,7 @@
 //   0x0018  CLEAR     WO  [0] clear sticky flags and peak meters
 //   0x001C  SAMPLES   RO  sample counter (frames since reset)
 //   0x0020  PEAK_IN   RO  max |x| since last clear (24-bit)
-//   0x0024  PEAK_OUT  RO  max |y| since last clear (24-bit)
+//   0x0024  PEAK_OUT  RO  max |final DAC word| since last clear (24-bit)
 //   0x0028  REC_WPTR  RO  frames written since REC last went 0 -> 1 (free running)
 //   0x0040  ECHO_CTRL   RW  [0] EN (also toggled by BTN2), [3:1] head mask (bit 1 = head 1), [4] CANCEL, [5] REV (also toggled by BTN3)
 //                         (Space Echo, see docs/space_echo.md; reset 0x02 = off, head 1)
@@ -43,10 +44,11 @@
 //                         reading clears
 //   0x8000+4*i  COEF[i]  WO  [17:0] signed tap i, written to the INACTIVE bank
 //   0x10000+4*i CAPTURE[i] RO  ring of 2^CAP_LOG2 frames (8192 by default);
-//                         word 2*k = dry x, word 2*k+1 = wet y of frame k
+//                         word 2*k = dry x, word 2*k+1 = wet of frame k
 //                         (24-bit signed, sign-extended), k = frame mod 2^CAP_LOG2.
 //                         Written only while REC = 1. x = selected engine input,
-//                         y = engine output (independent of bypass/mute/echo).
+//                         wet = the final left DAC word (tx_l) of the same frame: cab FIR or
+//                         bypass, tape echo and spring reverb as switched on, 0 while muted.
 //
 // Audio path: x -> FIR (y) -> [bypass ? x : y] = s -> Space Echo -> + spring wet -> DAC
 // (mute forces 0). With ECHO_CTRL.EN = 0 the tape echo is transparent.
@@ -473,14 +475,11 @@ module cab_conv_top #(
 
     // meters run one cycle behind the audio path (registered |x|, |y|)
     // to keep input select + abs + compare out of a single clock cycle
-    reg [DW-1:0] abs_x, abs_y, abs_o;
-    reg          m_in, m_out, m_out_sat, m_e;
+    reg [DW-1:0] abs_x, abs_o;
+    reg          m_in, m_e;
     always @(posedge aclk) begin
         abs_x     <= absval(x_sel);
-        abs_y     <= absval(y);
         m_in      <= frame_tick && !rst;
-        m_out     <= y_done && !r_mute && !r_bypass && !rst;
-        m_out_sat <= y_sat;
         abs_o     <= absval(fin_out);
         m_e       <= b_v && !rst;
     end
@@ -531,6 +530,13 @@ module cab_conv_top #(
                     e_peak <= abs_o;
                 if (fin_sat)
                     e_psat <= 1'b1;
+                // output meter / clip flag: what is heard (muted = 0 is not counted)
+                if (!r_mute) begin
+                    if (fin_sat || abs_o >= CLIP_LVL)
+                        st_out_clip <= 1'b1;
+                    if (abs_o > peak_out && !clr)
+                        peak_out <= abs_o;
+                end
                 if (rd_dr ? echo_rabs > 25'd0 : echo_rabs > e_drive)
                     e_drive <= echo_rabs;
             end
@@ -543,13 +549,6 @@ module cab_conv_top #(
                     st_in_clip <= 1'b1;
                 if (abs_x > peak_in && !clr)
                     peak_in <= abs_x;
-            end
-
-            if (m_out) begin
-                if (m_out_sat)
-                    st_out_clip <= 1'b1;
-                if (abs_y > peak_out && !clr)
-                    peak_out <= abs_y;
             end
 
             if (b_v) begin
@@ -565,11 +564,11 @@ module cab_conv_top #(
     end
 
     // ------------------------------------------------------------------
-    // Capture ring: one frame = {dry x, wet y}, written while REC = 1
+    // Capture ring: one frame = {dry x, wet = final DAC word}, written while REC = 1
     // ------------------------------------------------------------------
     reg  r_rec_q;
     wire rec_rise = r_rec && !r_rec_q;
-    wire cap_we   = r_rec && !rec_rise && y_done;   // x_dly belongs to this y
+    wire cap_we   = r_rec && !rec_rise && b_v;      // same strobe that loads tx_l; x_dly is still this frame's
 
     (* ram_style = "block" *)
     reg [2*DW-1:0] cap_mem [0:(1<<CAP_LOG2)-1];
@@ -602,7 +601,7 @@ module cab_conv_top #(
 
     always @(posedge aclk) begin
         if (cap_we)
-            cap_mem[rec_wptr[CAP_LOG2-1:0]] <= {x_dly, y};
+            cap_mem[rec_wptr[CAP_LOG2-1:0]] <= {x_dly, r_mute ? {DW{1'b0}} : fin_out};   // = tx_l
         cap_q <= cap_mem[s_axi_araddr[CAP_LOG2+2:3]];   // registered read
     end
 

@@ -11,7 +11,8 @@ program (tape_echo.v vs cab_conv.echo_model, plus the spring reverb spring.v vs
 cab_conv.spring_model on top: REV with echo on, REV with echo off, REV off with the tail
 ringing out) -> mute, with every switch landing exactly on
 a sample boundary. Also checks the capture
-ring (REC via AXI, ring wraps) bit-exactly against the model and the debounced
+ring (REC via AXI, ring wraps; wet = final DAC word incl. echo, reverb and mute, in the plain
+IR B phase and in two windows of the echo program) bit-exactly against the model and the debounced
 record button / led_rec and the bypass button / led_cab.
 """
 
@@ -59,7 +60,7 @@ def guitar_like(n, fs, rng, level=0.5):
 ECHO_SLEW = 5       # sim only: speed glide settles within ~100 samples instead of ~40000
 
 
-def echo_program():
+def echo_program(capn):
     """Space Echo command list for tb_cab_conv.v: (op, a, b, tag) with
     op 0 write, 1 wait frames, 2 read+log, 3 event, 4 read+expect, 5 sync (see the TB).
     Writes after a sync land in a single frame. Returns (cmds, tag names)."""
@@ -81,12 +82,15 @@ def echo_program():
     on = R.ECHO_EN | 0b1110 | R.ECHO_REV            # all heads
     cmds = []
     cmds += [(5, 0, 0, 0), (2, R.REG_ECHO_PEAK, 0, tag("p0")), (2, R.REG_ECHO_DRIVE, 0, tag("d0"))]
+    cmds += [(5, 0, 0, 0), (0, 0x18, 0x01, 0), (3, 0, 0, tag("clr"))]      # CLEAR: PEAK_OUT / STATUS[2] window starts
     cmds += [(5, 0, 0, 0), (0, 0x08, 0x00, 0), (3, 0, 0, tag("byp_off"))]
     cmds += [(1, 0, 20, 0)]
     cmds += [(5, 0, 0, 0)] + [(0, a, v, 0) for a, v in cfg.items()]
     cmds += [(0, R.REG_ECHO_CTRL, on, 0), (3, 0, 0, tag("cfg"))]
     cmds += [(4, a, v, 0) for a, v in cfg.items()] + [(4, R.REG_ECHO_CTRL, on, 0)]
     cmds += [(1, 0, 300, 0)]
+    # capture window A: echo + reverb running, REC on for more than one ring
+    cmds += [(5, 0, 0, 0), (0, 0x08, 0x40, 0), (1, 0, capn + 6, 0), (0, 0x08, 0x00, 0), (6, 0, 0, 0)]
     cmds += [(5, 0, 0, 0), (2, R.REG_ECHO_PEAK, 0, tag("p1")), (2, R.REG_ECHO_DRIVE, 0, tag("d1"))]
     cmds += [(5, 0, 0, 0), (0, R.REG_ECHO_DELAY, q16(25.25), 0), (3, 0, 0, tag("delay"))]
     cmds += [(1, 0, 300, 0)]
@@ -105,8 +109,12 @@ def echo_program():
     # REV off: the tail rings out (spring input gated, wet path still active)
     cmds += [(5, 0, 0, 0), (0, R.REG_ECHO_CTRL, 0x02, 0), (3, 0, 0, tag("off"))]
     cmds += [(1, 0, 200, 0)]
+    cmds += [(5, 0, 0, 0), (2, 0x24, 0, tag("po")), (2, 0x0C, 0, tag("st"))]
     cmds += [(5, 0, 0, 0), (2, R.REG_ECHO_PEAK, 0, tag("p3")), (2, R.REG_ECHO_DRIVE, 0, tag("d3"))]
-    cmds += [(5, 0, 0, 0), (0, 0x08, 0x02, 0), (3, 0, 0, tag("mute"))]
+    # capture window B: REC on in the reverb tail, the mute lands inside the window (wet -> 0)
+    cmds += [(5, 0, 0, 0), (0, 0x08, 0x40, 0), (1, 0, capn // 2, 0)]
+    cmds += [(5, 0, 0, 0), (0, 0x08, 0x42, 0), (3, 0, 0, tag("mute"))]
+    cmds += [(1, 0, capn // 2 + 4, 0), (0, 0x08, 0x02, 0), (6, 0, 0, 0)]
     cmds += [(0xF, 0, 0, 0)]
     # the schedule the model sees: tag -> {reg: value}
     sched = {"cfg": {**cfg, R.REG_ECHO_CTRL: on},
@@ -159,8 +167,9 @@ def main():
     # loading coefficients takes a few frames of simulated time
     load_frames = (ntaps * 6) // (2 * half * 64) + 6
     rec_frames = 3 * capn + 200          # capture + button test, inside the IR B phase
-    ecmds, etags, esched = echo_program()
-    echo_frames = sum(c[2] for c in ecmds if c[0] == 1) + 3 * sum(1 for c in ecmds if c[0] == 5) + 40
+    ecmds, etags, esched = echo_program(capn)
+    echo_frames = (sum(c[2] for c in ecmds if c[0] == 1) + 3 * sum(1 for c in ecmds if c[0] == 5) + 40
+                   + 4 * capn)
     rev_frames = 800                     # two BTN3 (reverb) test phases with unmuted output
     nin = f0 + f1 + f2 + f3 + tail + 2 * load_frames + 20 + rec_frames + echo_frames + rev_frames
     xl = guitar_like(nin, fs, rng, 0.5)
@@ -229,7 +238,7 @@ def main():
             ev[etags[int(p_[1])]] = int(p_[2])
         elif len(p_) == 5 and p_[0] == "RD":
             rd[etags[int(p_[1])]] = (int(p_[2]), int(p_[4]))
-    if len(ev) != 9 or len(rd) != 8:
+    if len(ev) != 10 or len(rd) != 10:
         sys.exit("FAIL: echo program log incomplete (%d events, %d reads)" % (len(ev), len(rd)))
     n_cmp = ev["byp_off"] - 8        # phases up to here are checked sample by sample below
 
@@ -356,6 +365,17 @@ def main():
         echo_ok &= nz > (b_ - a_) // 2
     ro = out_e[r1:r2] == s_fr[r1:r2]           # EN = 0 -> tape echo transparent
     echo_ok &= bool(ro.all())
+    # PEAK_OUT / STATUS[2] = final DAC word since CLEAR (ev clr .. read of PEAK_OUT)
+    sp, pko = rd["po"]
+    sc = ev["clr"]
+    seg_o = out_f[sc:sp]
+    exp_po = min(int(np.max(np.abs(seg_o))), cc.YMAX)
+    exp_clip = int(sat_f[sc:sp].any() or (np.abs(seg_o) >= 0x7E0000).any())
+    got_clip = (rd["st"][1] >> 2) & 1
+    good = pko == exp_po and got_clip == exp_clip and exp_clip == 1
+    print("output meter: PEAK_OUT %06x (model %06x), STATUS[2] %d (model %d) %s"
+          % (pko, exp_po, got_clip, exp_clip, "ok" if good else "MISMATCH"))
+    echo_ok &= good
     prev = 0
     for i in range(4):
         sp, pk = rd["p%d" % i]
@@ -368,6 +388,28 @@ def main():
               % (i, pk, exp_pk, dr, exp_dr, "ok" if good else "MISMATCH"))
         echo_ok &= good
         prev = sp
+    # ---- capture windows A/B: wet = final DAC word (echo + reverb + mute), dry = input ----
+    for k, nm in enumerate(["A (echo + reverb on)", "B (reverb tail, mute inside)"]):
+        with open(os.path.join(w, "cap_e%d.txt" % k)) as f:
+            wp = int(f.readline())
+        cp = np.loadtxt(os.path.join(w, "cap_e%d.txt" % k), dtype=np.int64, skiprows=1, ndmin=2)
+        if cp.shape != (capn, 2) or wp <= capn:
+            sys.exit("FAIL: capture dump %s (wptr=%d, shape=%s)" % (nm, wp, cp.shape))
+        nn = np.arange(wp - capn, wp)
+        wx, wy = cp[nn % capn, 0], cp[nn % capn, 1]
+        st = [s for s in range(len(xl) - capn + 1) if np.array_equal(xl[s:s + capn], wx)]
+        good = len(st) == 1
+        if good:
+            good = np.array_equal(wy, exp[st[0]:st[0] + capn])
+        nzw = int(np.count_nonzero(wy != wx)) if good else -1
+        print("capture %s: wptr %d, input samples %s, wet == final-output model: %s "
+              "(%d of %d differ from dry, %d zeros)"
+              % (nm, wp, st[0] if len(st) == 1 else st, good, nzw, capn, int(np.count_nonzero(wy == 0))))
+        cap_ok &= bool(good)
+        if k == 0:
+            cap_ok &= nzw > capn // 2          # effects audible in the window
+        else:
+            cap_ok &= 0 < int(np.count_nonzero(wy == 0)) < capn   # mute edge inside the window
     ok = (errors == 0 and cap_ok and names == ["IR A", "IR B", "bypass"] and echo_ok
           and "FAIL" not in log.stdout)
     print("RESULT:", "PASS" if ok else "FAIL (%d errors)" % errors)

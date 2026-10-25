@@ -246,13 +246,13 @@ Praktyczne uwagi z testów z interfejsem audio:
 | 0x0000 | ID | `0x43414256` ("CABV") |
 | 0x0004 | PARAMS | [15:0] liczba tapów, [23:16] log2 tapów na tor, [31:24] tory |
 | 0x0008 | CTRL | [0] bypass (BTN1 przełącza), [1] mute, [3:2] wejście (0 L, 1 R, 2 (L+R)/2), [4] bank, [5] mokry tylko na L, [6] REC (nagrywanie; BTN0 przełącza) |
-| 0x000C | STATUS | [0] aktywny bank, [1] przester wejścia, [2] przester wyjścia, [3] overrun, [4] overrun echa, [5] overrun pogłosu sprężynowego (przyklejone; 4 i 5 nigdy nie powinny być 1) |
+| 0x000C | STATUS | [0] aktywny bank, [1] przester wejścia, [2] przester wyjścia (końcowe słowo DAC nasycone lub \|słowo\| >= 0x7E0000; wyciszone wyjście nie liczy się), [3] overrun, [4] overrun echa, [5] overrun pogłosu sprężynowego (przyklejone; 4 i 5 nigdy nie powinny być 1) |
 | 0x0010 | SHIFT0 | przesunięcie dla banku 0 |
 | 0x0014 | SHIFT1 | przesunięcie dla banku 1 |
 | 0x0018 | CLEAR | [0] kasuje flagi i mierniki szczytowe |
 | 0x001C | SAMPLES | licznik próbek |
 | 0x0020 | PEAK_IN | max \|x\| od ostatniego CLEAR |
-| 0x0024 | PEAK_OUT | max \|y\| od ostatniego CLEAR |
+| 0x0024 | PEAK_OUT | max \|końcowe słowo DAC\| od ostatniego CLEAR (to, co słychać: po echu i pogłosie, wyciszone = nie liczy się) |
 | 0x0028 | REC_WPTR | liczba klatek zapisanych od ostatniego wzrostu REC (tylko odczyt, 32 bity, zerowana zboczem narastającym REC) |
 | 0x0040 | ECHO_CTRL | [0] EN (BTN2 przełącza), [3:1] maska głowic (bit 1 = głowica 1), [4] CANCEL, [5] REV (BTN3 przełącza; włącza wejście pogłosu sprężynowego); reset 0x02 |
 | 0x0044 | ECHO_DELAY | opóźnienie głowicy 1, Q16.16 próbek bez znaku (reset 100 ms) |
@@ -267,7 +267,7 @@ Praktyczne uwagi z testów z interfejsem audio:
 | 0x0068 | ECHO_PEAK | tylko odczyt, odczyt kasuje: [23:0] max \|słowa DAC\|, [24] mieszanka echa nasyciła się |
 | 0x006C | ECHO_DRIVE | tylko odczyt, odczyt kasuje: [24:0] max \|sygnału nagrywanego\| przed ogranicznikiem taśmy |
 | 0x8000 + 4i | COEF[i] | tap i (18 bit ze znakiem), zapis do nieaktywnego banku |
-| 0x10000 + 4i | CAPTURE[i] | bufor kołowy 8192 klatek (170,7 ms), tylko odczyt; słowo 2k = suchy x, 2k+1 = mokry y klatki k, 24 bity ze znakiem rozszerzone do 32; klatka n leży pod k = n mod 8192 |
+| 0x10000 + 4i | CAPTURE[i] | bufor kołowy 8192 klatek (170,7 ms), tylko odczyt; słowo 2k = suchy x, 2k+1 = mokry (końcowe słowo DAC) klatki k, 24 bity ze znakiem rozszerzone do 32; klatka n leży pod k = n mod 8192 |
 
 ## Nagrywanie
 
@@ -276,8 +276,10 @@ monofoniczne pliki WAV 24 bit / 48 kHz na karcie SD, np. do porównań albo dals
 sygnały do bufora kołowego 8192 klatek (170,7 ms), dopóki ustawiony jest
 `CTRL[6]` (REC), a PS opróżnia go przez łącze AXI4-Lite
 (`CabConv.read_capture`). Sygnał suchy to wejście silnika po wyborze wejścia,
-mokry to wyjście silnika (przed bypass/mute); oba są zgrane na ten sam numer
-próbki, więc między plikami zachodzi dokładnie `mokry = IR * suchy`.
+mokry to dokładnie słowo wysyłane na wyjście słuchawkowe (kabina lub bypass, plus
+Space Echo i pogłos sprężynowy, jeśli włączone, 0 przy wyciszeniu); oba są zgrane
+na ten sam numer próbki. Przy wyłączonych echu i pogłosie oraz bez wyciszenia
+między plikami zachodzi dokładnie `mokry = IR * suchy`.
 
 REC włącza się programowo (`cab.rec_start()` / `cab.rec_stop()` albo opcja
 `--start` w `record.py`) lub naciśnięciem **BTN0** (z odbijaniem styków,

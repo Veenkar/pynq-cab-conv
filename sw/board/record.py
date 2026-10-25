@@ -1,4 +1,5 @@
-# Recorder daemon: saves the dry input and the convolved output to two mono
+# Recorder daemon: saves the dry input and the final output (wet = exactly what goes to the
+# headphones: cab/bypass + echo + reverb, 0 when muted) to two mono
 # 24-bit 48 kHz WAVs while CTRL[6] REC is set (software or BTN0).
 # Reads cab_conv registers only (no overlay reload, codec untouched).
 #   sudo -i python3 ~xilinx/cab_conv/record.py [--dir D] [--once] [--start]
@@ -133,7 +134,7 @@ class Recorder(CaptureMixin):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Record dry and wet to two mono 24-bit WAVs while REC is set")
+    ap = argparse.ArgumentParser(description="Record dry and wet (final output incl. effects) to two mono 24-bit WAVs while REC is set")
     ap.add_argument("--dir", default=os.path.expanduser("~xilinx/cab_conv/rec"))
     ap.add_argument("--once", action="store_true",
                     help="record one take (the next REC) until REC=0, then exit")

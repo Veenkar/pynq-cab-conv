@@ -17,7 +17,7 @@ This file is for working on the code.
 - **Verified on hardware** (PYNQ Linux 3.0): overlay + codec init, bypass, IR load / bank switch,
   real-time convolution. Measured through a Focusrite (sweep-free, riff cross-spectrum): response
   matches the IR within ~0.5 dB 60 Hz–5 kHz, coherence 0.97–1.0, fs offset vs Focusrite ~5–10 ppm.
-- Recording (dry + wet mono WAV pair via a PL BRAM ring, BTN0/LED0): verified on hardware: 30 s take with 0 frames lost, wet channel bit-exact vs `fir_model(dry)`; BTN0 toggling + LED0 work.
+- Recording (dry + wet mono WAV pair via a PL BRAM ring, BTN0/LED0): verified on hardware: 30 s take with 0 frames lost, wet channel bit-exact vs `fir_model(dry)` (checked when wet was still the cab output y; wet is now the final DAC word incl. echo/reverb/mute, checked bit-exactly in sim against the final-output model and on hardware: a take with echo + reverb on keeps the repeats and the spring tail in the wet file after the dry input stops); BTN0 toggling + LED0 work.
 - PYNQ 3.0: run the driver as root via `sudo -i python3 ...` (login shell sources XRT + venv;
   plain `sudo python3` fails with "No Devices Found"). `import pynq` takes ~10 s on the board.
 - Each `CabConv(...)` with `download=True` reloads the bitstream and wipes the IR; use
@@ -111,9 +111,9 @@ Sim needs `iverilog`, `numpy`, `scipy`. Compile flags used: `-g2005 -DSIMULATION
 ## Register map
 Documented at the top of `rtl/cab_conv_top.v` and in README.md / README_PL.md. Coefs at `0x8000 + 4*i`, write-only.
 AXI window is 128 KiB. Recording: `CTRL[6]` REC (RW, BTN0 toggles, LED0 blinks while set), `0x28` REC_WPTR (RO, frames since
-REC rose), `0x10000 + 4*i` CAPTURE ring (RO, 8192 frames, word 2k = dry x, 2k+1 = wet y, sign-extended 24-bit).
+REC rose), `0x10000 + 4*i` CAPTURE ring (RO, 8192 frames, word 2k = dry x, 2k+1 = wet = final DAC word tx_l of the same frame (cab/bypass + echo + spring, 0 when muted), sign-extended 24-bit). `PEAK_OUT` and `STATUS[2]` (output clip, sticky) also use that final word: clip = fin_sat (echo/mix saturation) or |word| >= 0x7E0000, muted not counted; PEAK_IN / STATUS[1] unchanged.
 Space Echo: regs `0x40..0x6C` (ECHO_*, `ECHO_PEAK`/`ECHO_DRIVE` clear on read), `STATUS[4]` echo overrun, `STATUS[5]` spring overrun; tx = sat24(echo output + spring wet)
-(EN = 0 is bit-identical to no echo; REV = 0, REVERB = 0 and an empty tail is bit-identical to no reverb); the capture ring still records the cab output y. The sim overrides the glide
+(EN = 0 is bit-identical to no echo; REV = 0, REVERB = 0 and an empty tail is bit-identical to no reverb); the capture ring records the final DAC word. The sim overrides the glide
 shift (`ECHO_SLEW` param, 5 in the TB, 13 in hardware) so echoes settle within a short run.
 `record.py` attaches by raw MMIO (no CabConv, codec not reconfigured) and writes `~xilinx/cab_conv/rec/*.wav`.
 If you change the map, update RTL header, both README tables, `sw/cab_conv.py` constants and the testbench together.
