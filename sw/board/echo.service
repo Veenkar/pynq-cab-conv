@@ -1,0 +1,20 @@
+# systemd unit: Space Echo control server (TCP 5201, used by sw/echo_panel.py on the PC).
+# Install: sudo ./install_autostart.sh (default; --no-echo skips it)
+# Knob state is kept in /home/xilinx/cab_conv/echo_state.json and re-applied at start.
+[Unit]
+Description=Cab convolver Space Echo control server
+After=cab-conv.service
+# stopped before and restarted after any restart of cab-conv: register reads while the PL is being
+# reprogrammed hang the AXI bus and freeze the board
+PartOf=cab-conv.service
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -lc "exec python3 -u /home/xilinx/cab_conv/echo_server.py"
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

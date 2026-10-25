@@ -1,0 +1,8 @@
+{
+  "Slapback":      {"input": 7, "wow": 1.5, "tape": 3, "mode": 1, "repeat_rate": 9, "intensity": 1.5, "echo_volume": 6, "bass": 5, "treble": 5},
+  "Dub Delay":     {"input": 7, "wow": 3, "tape": 6, "mode": 4, "repeat_rate": 4, "intensity": 6.5, "echo_volume": 6.5, "bass": 6, "treble": 3},
+  "Ambient Swell": {"input": 6.5, "wow": 4, "tape": 5, "mode": 11, "repeat_rate": 3, "intensity": 7.5, "echo_volume": 5.5, "bass": 5, "treble": 4},
+  "Runaway":       {"input": 6, "wow": 5, "tape": 6, "mode": 8, "repeat_rate": 5.5, "intensity": 9.5, "echo_volume": 7, "bass": 5, "treble": 4},
+  "Worn Tape":     {"input": 7, "wow": 8, "tape": 9, "mode": 3, "repeat_rate": 5, "intensity": 4, "echo_volume": 6, "bass": 4, "treble": 3},
+  "Clean Triple":  {"input": 7, "wow": 0.5, "tape": 1, "mode": 11, "repeat_rate": 6, "intensity": 2, "echo_volume": 6, "bass": 5, "treble": 5}
+}

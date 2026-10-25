@@ -2,18 +2,21 @@
 # Install / remove the boot-time start of the cab convolver on a PYNQ-Z2 (PYNQ 3.0).
 # Run as root from the directory with cab-conv.service (e.g. ~xilinx/cab_conv):
 #
-#   sudo ./install_autostart.sh            install + enable cab-conv.service and record.service
+#   sudo ./install_autostart.sh            install + enable cab-conv.service, record.service
 #                                          (BTN0 recorder, takes go to ~xilinx/cab_conv/rec)
+#                                          and echo.service (Space Echo server)
 #   sudo ./install_autostart.sh --fast     also speed up boot (IR ready ~85 s instead of ~160 s):
 #                                          - /boot/boot.py: drop the base.bit load + LED blink
 #                                            (original kept as /boot/boot.py.orig)
 #                                          - disable jupyter.service and clear_pl_statefile.service
 #                                            (the latter has Requires=jupyter.service)
 #   sudo ./install_autostart.sh --no-rec   without the recorder (removes record.service if present)
+#   sudo ./install_autostart.sh --no-echo  without the Space Echo server (echo.service, TCP 5201,
+#                                          see docs/space_echo.md; removed if present)
 #   sudo ./install_autostart.sh --oled     also install + enable status.service (SSD1306 OLED on
 #                                          /dev/i2c-0); combinable: --fast --oled --no-rec
 #   sudo ./install_autostart.sh --restore  undo everything: disable cab-conv.service and
-#                                          record.service and
+#                                          record.service, echo.service and
 #                                          status.service, restore boot.py, re-enable Jupyter
 set -e
 
@@ -22,6 +25,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 UNIT=/etc/systemd/system/cab-conv.service
 RECUNIT=/etc/systemd/system/record.service
 OLEDUNIT=/etc/systemd/system/status.service
+ECHOUNIT=/etc/systemd/system/echo.service
 
 fast_boot() {
     [ -f /boot/boot.py.orig ] || cp /boot/boot.py /boot/boot.py.orig
@@ -50,7 +54,8 @@ case "${1:-}" in
     systemctl disable --now cab-conv.service 2>/dev/null || true
     systemctl disable --now record.service 2>/dev/null || true
     systemctl disable --now status.service 2>/dev/null || true
-    rm -f "$UNIT" "$RECUNIT" "$OLEDUNIT"
+    systemctl disable --now echo.service 2>/dev/null || true
+    rm -f "$UNIT" "$RECUNIT" "$OLEDUNIT" "$ECHOUNIT"
     if [ -f /boot/boot.py.orig ]; then
         cp /boot/boot.py.orig /boot/boot.py && rm /boot/boot.py.orig && sync
     fi
@@ -58,13 +63,15 @@ case "${1:-}" in
     systemctl daemon-reload
     echo "restored PYNQ defaults (takes effect at next boot)"
     ;;
-""|--fast|--no-rec|--rec|--oled)
-    REC=1                                   # the recorder is installed by default
+""|--fast|--no-rec|--no-echo|--rec|--oled)
+    REC=1
+    ECHO=1                                   # the recorder is installed by default
     for opt in "$@"; do
         case "$opt" in
         --no-rec) REC=0 ;;
+        --no-echo) ECHO=0 ;;
         --fast|--rec|--oled) ;;             # --rec: old spelling of the default
-        *) sed -n '2,18p' "$0"; exit 1 ;;
+        *) sed -n '2,20p' "$0"; exit 1 ;;
         esac
     done
     install -m 644 "$HERE/cab-conv.service" "$UNIT"
@@ -75,12 +82,22 @@ case "${1:-}" in
         systemctl disable --now record.service 2>/dev/null || true
         rm -f "$RECUNIT"
     fi
+    if [ "$ECHO" = 1 ]; then
+        install -m 644 "$HERE/echo.service" "$ECHOUNIT"
+    else
+        systemctl disable --now echo.service 2>/dev/null || true
+        rm -f "$ECHOUNIT"
+    fi
     case " $* " in *" --oled "*) install -m 644 "$HERE/status.service" "$OLEDUNIT" ;; esac
     systemctl daemon-reload
     systemctl enable cab-conv.service
     if [ "$REC" = 1 ]; then
         systemctl enable record.service
         echo "record.service enabled (takes go to ~xilinx/cab_conv/rec)"
+    fi
+    if [ "$ECHO" = 1 ]; then
+        systemctl enable echo.service
+        echo "echo.service enabled (Space Echo server, TCP 5201)"
     fi
     case " $* " in *" --oled "*)
         systemctl enable status.service
@@ -90,6 +107,6 @@ case "${1:-}" in
     echo "cab-conv.service enabled; edit ExecStart in $UNIT to change IR/levels"
     ;;
 *)
-    sed -n '2,18p' "$0"; exit 1
+    sed -n '2,20p' "$0"; exit 1
     ;;
 esac
