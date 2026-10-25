@@ -115,6 +115,24 @@ module tb_cab_conv;
             endcase
         end
     end
+    // REV (ECHO_CTRL[5]) as the spring sees it at each frame tick, logged on every change:
+    // "REVCH j v" = from frame j on (run_sim.py feeds this to spring_model)
+    reg rev_seen = 1'b0;
+    always @(posedge aclk) if (aresetn && dut.frame_tick && !dut.u_spring.busy) begin
+        if (dut.e_ctrl[5] !== rev_seen) begin
+            rev_seen = dut.e_ctrl[5];
+            $display("REVCH %0d %0d", dut.samples, rev_seen);
+        end
+    end
+    // spring step length in cycles (busy high until done)
+    integer spr_cyc = 0, spr_max = 0, spr_n = 0;
+    always @(posedge aclk) begin
+        if (dut.u_spring.busy) spr_cyc = spr_cyc + 1;
+        if (dut.u_spring.done) begin
+            if (spr_cyc > spr_max) spr_max = spr_cyc;
+            spr_cyc = 0; spr_n = spr_n + 1;
+        end
+    end
     integer lvl_in_on = 0, lvl_out_on = 0;
     always @(posedge aclk) begin
         if (led_lvl_in)  lvl_in_on  = lvl_in_on + 1;
@@ -563,6 +581,7 @@ module tb_cab_conv;
         run_echo;
         axi_read(16'h000C, r);
         if (r[4]) $display("FAIL: echo overrun during the echo program");
+        if (r[5]) $display("FAIL: spring overrun during the echo program");
         $display("[%0d] mute", fidx);
         axi_write(16'h0018, 32'h1);         // clear flags
         axi_read(16'h000C, r);
@@ -607,6 +626,10 @@ module tb_cab_conv;
         else      $display("no engine overrun");
         if (r[4]) $display("FAIL: echo overrun");
         else      $display("no echo overrun");
+        if (r[5]) $display("FAIL: spring overrun");
+        else      $display("no spring overrun");
+        $display("spring: %0d steps, longest step %0d cycles (frame = %0d cycles)",
+                 spr_n, spr_max, 2 * HALF * 64);
         $display("LD4 level cycles: cab/off %0d cab/echo %0d bypass/off %0d bypass/echo %0d",
                  ld4_cov0, ld4_cov1, ld4_cov2, ld4_cov3);
         if (ld4_cov0 == 0 || ld4_cov1 == 0 || ld4_cov2 == 0 || ld4_cov3 == 0)

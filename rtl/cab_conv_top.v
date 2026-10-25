@@ -18,6 +18,7 @@
 //                         [2] output clip  (sticky)
 //                         [3] engine overrun (sticky, should never be 1)
 //                         [4] echo overrun (sticky, should never be 1)
+//                         [5] spring reverb overrun (sticky, should never be 1)
 //   0x0010  SHIFT0    RW  [5:0] output shift for bank 0
 //   0x0014  SHIFT1    RW  [5:0] output shift for bank 1
 //   0x0018  CLEAR     WO  [0] clear sticky flags and peak meters
@@ -35,9 +36,9 @@
 //   0x0058  ECHO_TREBLE RW  [17:0] signed Q16                    (reset 0)
 //   0x005C  ECHO_WOW    RW  [15:0] wow depth, [31:16] flutter depth, Q8 samples (reset 0)
 //   0x0060  ECHO_DAMP   RW  [15:0] tape lowpass coefficient, Q16 (reset 65535)
-//   0x0064  ECHO_REVERB RW  [16:0] reverb volume (stored only)   (reset 0)
-//   0x0068  ECHO_PEAK   RO  [23:0] max |DAC word| since last read, [24] output mix saturated;
-//                         reading clears
+//   0x0064  ECHO_REVERB RW  [16:0] spring reverb volume, Q16     (reset 0)
+//   0x0068  ECHO_PEAK   RO  [23:0] max |DAC word| since last read, [24] output mix saturated
+//                         (final word, including the reverb); reading clears
 //   0x006C  ECHO_DRIVE  RO  [24:0] max |record signal| before the tape clip since last read;
 //                         reading clears
 //   0x8000+4*i  COEF[i]  WO  [17:0] signed tap i, written to the INACTIVE bank
@@ -47,13 +48,17 @@
 //                         Written only while REC = 1. x = selected engine input,
 //                         y = engine output (independent of bypass/mute/echo).
 //
-// Audio path: x -> FIR (y) -> [bypass ? x : y] -> Space Echo -> DAC (mute forces 0).
-// With ECHO_CTRL.EN = 0 the echo is transparent.
+// Audio path: x -> FIR (y) -> [bypass ? x : y] = s -> Space Echo -> + spring wet -> DAC
+// (mute forces 0). With ECHO_CTRL.EN = 0 the tape echo is transparent.
+// Spring reverb (spring.v, docs/spring.md): runs in parallel with the FIR, input = s of the
+// previous sample gated by ECHO_CTRL[5] REV (the tail rings out after REV is cleared),
+// wet = (W * ECHO_REVERB) >> 16 added to the echo output with saturation, independent of EN.
+// With REV = 0, ECHO_REVERB = 0 and an empty tail the output equals the echo output.
 //
 // The codec address pins are driven high (I2C address 0x3B, like PYNQ).
 // Buttons: BTN0 toggles REC (LED0 blinks while recording), BTN1 toggles bypass
 // (LED1 = cab on), BTN2 toggles the Space Echo EN bit (LED2 = echo on),
-// BTN3 toggles ECHO_CTRL.REV (LED3 = reverb on; the spring reverb is not implemented yet).
+// BTN3 toggles ECHO_CTRL.REV (LED3 = reverb on).
 // Level meters as PWM brightness: input on RGB LED LD4, output on RGB LED LD5.
 // RGB LD4 shows the input level (PWM) in a colour that tells the mode:
 //   cab on,     echo off: green      cab on,     echo on: blue
@@ -179,7 +184,7 @@ module cab_conv_top #(
     reg [15:0] e_damp;
     reg [23:0] e_peak;
     reg [24:0] e_drive;
-    reg        e_psat, st_echo;
+    reg        e_psat, st_echo, st_spring;
     reg        rd_pk, rd_dr;            // peak / drive read: clear
 
     reg        cw_en;
@@ -338,7 +343,7 @@ module cab_conv_top #(
                     6'h01: s_axi_rdata <= PARAMS_WORD;
                     6'h02: s_axi_rdata <= {25'd0, r_rec, r_left_only, r_bank,
                                            r_insel, r_mute, r_bypass};
-                    6'h03: s_axi_rdata <= {27'd0, st_echo, overrun, st_out_clip,
+                    6'h03: s_axi_rdata <= {26'd0, st_spring, st_echo, overrun, st_out_clip,
                                            st_in_clip, bank_act};
                     6'h04: s_axi_rdata <= {26'd0, r_shift0};
                     6'h05: s_axi_rdata <= {26'd0, r_shift1};
@@ -425,6 +430,35 @@ module cab_conv_top #(
         .r_abs(echo_rabs), .miss(echo_miss)
     );
 
+    // Spring reverb: s_lat = echo-stage input of the previous sample (see spring.v)
+    reg  signed [DW-1:0] s_lat;
+    always @(posedge aclk)
+        if (rst) s_lat <= {DW{1'b0}};
+        else if (y_done) s_lat <= echo_s;
+
+    wire signed [24:0] spr_wet;
+    wire               spr_done, spr_miss;
+    spring u_spring (
+        .clk(aclk), .rst(rst), .tick(frame_tick), .start(frame_tick),
+        .s_in(s_lat), .rev_on(e_ctrl[5]), .rgain(e_rev),
+        .busy(), .done(spr_done), .wet(spr_wet), .miss(spr_miss)
+    );
+
+    // final DAC word = sat24(echo_out + wet), two register stages (timing)
+    reg signed [25:0]    o_sum;
+    reg signed [DW-1:0]  fin_out;
+    reg                  a_v, b_v, fin_sat;
+    always @(posedge aclk) begin
+        a_v <= echo_done && !rst;
+        b_v <= a_v && !rst;
+        o_sum <= {{2{echo_out[DW-1]}}, echo_out} + {spr_wet[24], spr_wet};
+        if (a_v) begin
+            fin_out <= (o_sum > 26'sd8388607)  ? 24'sh7FFFFF :
+                       (o_sum < -26'sd8388608) ? 24'sh800000 : o_sum[DW-1:0];
+            fin_sat <= echo_sat || (o_sum > 26'sd8388607) || (o_sum < -26'sd8388608);
+        end
+    end
+
     function [DW-1:0] absval;
         input signed [DW-1:0] v;
         begin
@@ -447,11 +481,11 @@ module cab_conv_top #(
         m_in      <= frame_tick && !rst;
         m_out     <= y_done && !r_mute && !r_bypass && !rst;
         m_out_sat <= y_sat;
-        abs_o     <= absval(echo_out);
-        m_e       <= echo_done && !rst;
+        abs_o     <= absval(fin_out);
+        m_e       <= b_v && !rst;
     end
 
-    // level LEDs: input, and what actually goes to the DAC (after the echo, 0 when muted)
+    // level LEDs: input, and what actually goes to the DAC (after echo + reverb, 0 when muted)
     level_led u_led_in (.clk(aclk), .rst(rst), .valid(m_in), .level(abs_x), .led(lvl_in_pwm));
     level_led u_led_out (.clk(aclk), .rst(rst), .valid(m_e),
                          .level(r_mute ? {DW{1'b0}} : abs_o), .led(lvl_out_pwm));
@@ -469,17 +503,21 @@ module cab_conv_top #(
             e_drive     <= 25'd0;
             e_psat      <= 1'b0;
             st_echo     <= 1'b0;
+            st_spring   <= 1'b0;
         end else begin
             if (clr) begin
                 st_in_clip  <= 1'b0;
                 st_out_clip <= 1'b0;
                 st_echo     <= 1'b0;
+                st_spring   <= 1'b0;
                 peak_in     <= 24'd0;
                 peak_out    <= 24'd0;
             end
 
             if (echo_miss)
                 st_echo <= 1'b1;
+            if (spr_miss)
+                st_spring <= 1'b1;
 
             // echo meters: a read clears them (a sample landing in the same cycle is kept)
             if (rd_pk) begin
@@ -491,7 +529,7 @@ module cab_conv_top #(
             if (m_e) begin
                 if (!r_mute && (rd_pk ? abs_o > 24'd0 : abs_o > e_peak))
                     e_peak <= abs_o;
-                if (echo_sat)
+                if (fin_sat)
                     e_psat <= 1'b1;
                 if (rd_dr ? echo_rabs > 25'd0 : echo_rabs > e_drive)
                     e_drive <= echo_rabs;
@@ -514,13 +552,13 @@ module cab_conv_top #(
                     peak_out <= abs_y;
             end
 
-            if (echo_done) begin
+            if (b_v) begin
                 if (r_mute) begin
                     tx_l <= {DW{1'b0}};
                     tx_r <= {DW{1'b0}};
                 end else begin
-                    tx_l <= echo_out;
-                    tx_r <= r_left_only ? x_dly : echo_out;
+                    tx_l <= fin_out;
+                    tx_r <= r_left_only ? x_dly : fin_out;
                 end
             end
         end

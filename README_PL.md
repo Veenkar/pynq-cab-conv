@@ -207,7 +207,7 @@ skryptu; program widzi i może zmieniać te same bity `CTRL`):
 | BTN0 | włącza/wyłącza nagrywanie (`CTRL[6]`, zob. [Nagrywanie](#nagrywanie)) | LED0 miga (ok. 1,8 Hz) podczas nagrywania |
 | BTN1 | włącza/wyłącza bypass (`CTRL[0]`): sygnał suchy zamiast kolumny | LED1 świeci, gdy kolumna działa (bypass wyłączony, stan po włączeniu) |
 | BTN2 | włącza/wyłącza Space Echo (`ECHO_CTRL[0]`) | LED2 świeci, gdy echo jest włączone |
-| BTN3 | włącza/wyłącza pogłos (`ECHO_CTRL[5]`; pogłos sprężynowy nie jest jeszcze zaimplementowany, więc brak wpływu na dźwięk) | LED3 świeci, gdy pogłos jest włączony |
+| BTN3 | włącza/wyłącza wejście pogłosu sprężynowego (`ECHO_CTRL[5]`; po wyłączeniu ogon wybrzmiewa) | LED3 świeci, gdy pogłos jest włączony |
 | | | LED-y RGB LD4 / LD5: poziom wejścia / wyjścia (kolor LD4: kolumna włączona = zielony (echo wył.) / niebieski (echo wł.); bypass = biały (echo wył.) / cyjan (echo wł.); LD5 tak samo, ale z pogłosem zamiast echa; podczas nagrywania oba migają czerwonym na pełną jasność równo z LED0); jasność podwaja się co 6 dB (ciemno poniżej ok. -48 dBFS), opadanie ok. 85 ms |
 
 ## Podłączenie wzmacniacza: ważne
@@ -246,7 +246,7 @@ Praktyczne uwagi z testów z interfejsem audio:
 | 0x0000 | ID | `0x43414256` ("CABV") |
 | 0x0004 | PARAMS | [15:0] liczba tapów, [23:16] log2 tapów na tor, [31:24] tory |
 | 0x0008 | CTRL | [0] bypass (BTN1 przełącza), [1] mute, [3:2] wejście (0 L, 1 R, 2 (L+R)/2), [4] bank, [5] mokry tylko na L, [6] REC (nagrywanie; BTN0 przełącza) |
-| 0x000C | STATUS | [0] aktywny bank, [1] przester wejścia, [2] przester wyjścia, [3] overrun, [4] overrun echa |
+| 0x000C | STATUS | [0] aktywny bank, [1] przester wejścia, [2] przester wyjścia, [3] overrun, [4] overrun echa, [5] overrun pogłosu sprężynowego (przyklejone; 4 i 5 nigdy nie powinny być 1) |
 | 0x0010 | SHIFT0 | przesunięcie dla banku 0 |
 | 0x0014 | SHIFT1 | przesunięcie dla banku 1 |
 | 0x0018 | CLEAR | [0] kasuje flagi i mierniki szczytowe |
@@ -254,7 +254,7 @@ Praktyczne uwagi z testów z interfejsem audio:
 | 0x0020 | PEAK_IN | max \|x\| od ostatniego CLEAR |
 | 0x0024 | PEAK_OUT | max \|y\| od ostatniego CLEAR |
 | 0x0028 | REC_WPTR | liczba klatek zapisanych od ostatniego wzrostu REC (tylko odczyt, 32 bity, zerowana zboczem narastającym REC) |
-| 0x0040 | ECHO_CTRL | [0] EN (BTN2 przełącza), [3:1] maska głowic (bit 1 = głowica 1), [4] CANCEL, [5] REV (BTN3 przełącza; zarezerwowany, na razie bez wpływu na dźwięk); reset 0x02 |
+| 0x0040 | ECHO_CTRL | [0] EN (BTN2 przełącza), [3:1] maska głowic (bit 1 = głowica 1), [4] CANCEL, [5] REV (BTN3 przełącza; włącza wejście pogłosu sprężynowego); reset 0x02 |
 | 0x0044 | ECHO_DELAY | opóźnienie głowicy 1, Q16.16 próbek bez znaku (reset 100 ms) |
 | 0x0048 | ECHO_FB | [16:0] sprzężenie zwrotne, Q16 (0 .. 2,0) |
 | 0x004C | ECHO_LEVEL | [16:0] głośność echa, Q16 |
@@ -263,7 +263,7 @@ Praktyczne uwagi z testów z interfejsem audio:
 | 0x0058 | ECHO_TREBLE | [17:0] Q16 ze znakiem, 0 = płasko |
 | 0x005C | ECHO_WOW | [15:0] głębokość wow, [31:16] głębokość flutter, Q8 próbek |
 | 0x0060 | ECHO_DAMP | [15:0] współczynnik dolnoprzepustowy taśmy, Q16 (reset 65535) |
-| 0x0064 | ECHO_REVERB | [16:0] głośność pogłosu (zarezerwowany, tylko zapamiętywany) |
+| 0x0064 | ECHO_REVERB | [16:0] głośność pogłosu sprężynowego (REVERB VOLUME), Q16; działa z echem i bez niego |
 | 0x0068 | ECHO_PEAK | tylko odczyt, odczyt kasuje: [23:0] max \|słowa DAC\|, [24] mieszanka echa nasyciła się |
 | 0x006C | ECHO_DRIVE | tylko odczyt, odczyt kasuje: [24:0] max \|sygnału nagrywanego\| przed ogranicznikiem taśmy |
 | 0x8000 + 4i | COEF[i] | tap i (18 bit ze znakiem), zapis do nieaktywnego banku |
@@ -372,6 +372,15 @@ Arytmetyka echa i szczegóły rejestrów są w [docs/space_echo.md](docs/space_e
 `rtl/tape_echo.v` (ok. 50 taktów na próbkę, jeden wspólny mnożnik DSP, taśma 2^15 próbek w BRAM),
 a model bitowo dokładny to `echo_model()` w `sw/cab_conv.py`. Przy `ECHO_CTRL.EN = 0` wyjście jest
 bitowo identyczne jak w projekcie bez echa.
+
+Pogłos sprężynowy (MODE SELECTOR pozycje 5-12, gałka REVERB VOLUME; BTN3 przełącza `ECHO_CTRL[5]`)
+to dwa dyspersyjne modele sprężyn w `rtl/spring.v` (jeden wspólny mnożnik, stan w BRAM, 728 taktów
+na próbkę, równolegle z FIR; model bitowo dokładny `spring_model()`, szczegóły w
+[docs/spring.md](docs/spring.md)). REV bramkuje tylko wejście sprężyn; sygnał mokry
+`(W * ECHO_REVERB) >> 16` jest dodawany do wyjścia echa (z nasyceniem) i działa także przy
+wyłączonym echu (`EN = 0`). Przy REV = 0, REVERB = 0 i pustym ogonie wyjście jest bitowo identyczne
+jak w projekcie bez pogłosu. Pogłos dodaje 2 próbki opóźnienia; `STATUS[5]` sygnalizuje krok, który
+nie skończył się w ciągu ramki.
 
 ## Rozbudowa
 

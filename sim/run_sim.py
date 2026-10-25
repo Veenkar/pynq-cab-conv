@@ -7,7 +7,9 @@ against the Python model in sw/cab_conv.py.
     python3 sim/run_sim.py --full     # real config: 4 x 2048 taps, 122.88 MHz frame budget
 
 The captured stream must be: unity IR -> IR A -> IR B -> bypass -> IR B + Space Echo
-program (tape_echo.v vs cab_conv.echo_model) -> mute, with every switch landing exactly on
+program (tape_echo.v vs cab_conv.echo_model, plus the spring reverb spring.v vs
+cab_conv.spring_model on top: REV with echo on, REV with echo off, REV off with the tail
+ringing out) -> mute, with every switch landing exactly on
 a sample boundary. Also checks the capture
 ring (REC via AXI, ring wraps) bit-exactly against the model and the debounced
 record button / led_rec and the bypass button / led_cab.
@@ -96,8 +98,13 @@ def echo_program():
     cmds += [(5, 0, 0, 0), (0, R.REG_ECHO_DELAY, q16(70.75), 0),
              (0, R.REG_ECHO_CTRL, R.ECHO_EN | 0b1100, 0), (3, 0, 0, tag("heads23"))]
     cmds += [(1, 0, 250, 0)]
+    # reverb only: REV on, tape echo off, other REVERB volume
+    cmds += [(5, 0, 0, 0), (0, R.REG_ECHO_REVERB, 90000, 0), (0, R.REG_ECHO_CTRL, R.ECHO_REV | 0x02, 0),
+             (3, 0, 0, tag("revonly"))]
+    cmds += [(1, 0, 250, 0)]
+    # REV off: the tail rings out (spring input gated, wet path still active)
     cmds += [(5, 0, 0, 0), (0, R.REG_ECHO_CTRL, 0x02, 0), (3, 0, 0, tag("off"))]
-    cmds += [(1, 0, 100, 0)]
+    cmds += [(1, 0, 200, 0)]
     cmds += [(5, 0, 0, 0), (2, R.REG_ECHO_PEAK, 0, tag("p3")), (2, R.REG_ECHO_DRIVE, 0, tag("d3"))]
     cmds += [(5, 0, 0, 0), (0, 0x08, 0x02, 0), (3, 0, 0, tag("mute"))]
     cmds += [(0xF, 0, 0, 0)]
@@ -107,6 +114,7 @@ def echo_program():
              "cancel": {R.REG_ECHO_CTRL: on | R.ECHO_CANCEL},
              "uncancel": {R.REG_ECHO_CTRL: on},
              "heads23": {R.REG_ECHO_DELAY: q16(70.75), R.REG_ECHO_CTRL: R.ECHO_EN | 0b1100},
+             "revonly": {R.REG_ECHO_REVERB: 90000, R.REG_ECHO_CTRL: R.ECHO_REV | 0x02},
              "off": {R.REG_ECHO_CTRL: 0x02}}
     return cmds, tags, sched
 
@@ -175,7 +183,7 @@ def main():
         f.write("\n".join("%x %x %x %x" % c for c in ecmds) + "\n")
 
     rtl = [os.path.join(ROOT, "rtl", n) for n in
-           ("clk_fwd.v", "debounce.v", "level_led.v", "i2s_master.v", "fir_engine.v", "tape_echo.v", "cab_conv_top.v")]
+           ("clk_fwd.v", "debounce.v", "level_led.v", "i2s_master.v", "fir_engine.v", "tape_echo.v", "spring.v", "cab_conv_top.v")]
     vvp = os.path.join(w, "tb.vvp")
     logf = os.path.join(w, "sim.log")
     if not args.reuse:
@@ -212,14 +220,16 @@ def main():
     phases = [("unity", xl), ("IR A", ya), ("IR B", yb), ("bypass", xl)]
 
     # events logged by the testbench: "EVT tag S" and "RD tag S addr value" (S = frames ticked)
-    ev, rd = {}, {}
+    ev, rd, revch = {}, {}, []
     for line in log.stdout.splitlines():
         p_ = line.split()
-        if len(p_) == 3 and p_[0] == "EVT":
+        if len(p_) == 3 and p_[0] == "REVCH":      # REV (ECHO_CTRL[5]) as seen by the spring at tick j
+            revch.append((int(p_[1]), int(p_[2])))
+        elif len(p_) == 3 and p_[0] == "EVT":
             ev[etags[int(p_[1])]] = int(p_[2])
         elif len(p_) == 5 and p_[0] == "RD":
             rd[etags[int(p_[1])]] = (int(p_[2]), int(p_[4]))
-    if len(ev) != 8 or len(rd) != 8:
+    if len(ev) != 9 or len(rd) != 8:
         sys.exit("FAIL: echo program log incomplete (%d events, %d reads)" % (len(ev), len(rd)))
     n_cmp = ev["byp_off"] - 8        # phases up to here are checked sample by sample below
 
@@ -288,6 +298,21 @@ def main():
     tb, ta, tbp = dict(trans)["IR B"], dict(trans)["IR A"], dict(trans)["bypass"]
     ns = min(len(ol) - lag, nin)
     best = None
+
+    def spring_inputs(nf):
+        """Per-frame REV (from the TB log of what the spring saw) and ECHO_REVERB (from the
+        register schedule) for the spring model."""
+        rev = np.zeros(nf, dtype=bool)
+        cur, last = 0, 0
+        for j, v in revch:
+            rev[last:j] = cur
+            cur, last = v, j
+        rev[last:] = cur
+        rg = np.zeros(nf, dtype=np.int64)
+        for k, v in sorted((ev[k], v) for k, v in esched.items()):
+            if cc.REG_ECHO_REVERB in v:
+                rg[k:] = v[cc.REG_ECHO_REVERB]
+        return rev, rg
     # The echo runs once per DUT frame j from reset; sample n of the input stream is frame
     # j = n - dly (dly is the unknown, constant frame offset: found by search).
     # Register writes and reads are logged in frames (S = frames ticked so far).
@@ -296,27 +321,41 @@ def main():
         s_full = np.concatenate([xl[:ta], ya[ta:tb], yb[tb:tbp], xl[tbp:nb], yb[nb:]])[:ns]
         s_fr = np.concatenate([np.zeros(max(0, -dly), dtype=np.int64), s_full[max(0, dly):]])
         sched = [(ev[k], v) for k, v in esched.items()]
-        out_f, sat_f, rabs_f = cc.echo_model(s_fr, schedule=sched, want_drive=True, slew=ECHO_SLEW)
+        out_e, sat_f, rabs_f = cc.echo_model(s_fr, schedule=sched, want_drive=True, slew=ECHO_SLEW)
+        rev_a, rg_a = spring_inputs(len(s_fr))
+        out_f, wet_f = cc.spring_model(s_fr, rev_a, rg_a, echo_out=out_e)
+        sat_f = sat_f | ((out_e + wet_f) > cc.YMAX) | ((out_e + wet_f) < cc.YMIN)
         out_m = out_f[-dly:] if dly <= 0 else np.concatenate([np.zeros(dly, dtype=np.int64), out_f])
         out_m = out_m[:ns]
         exp = out_m.copy()
         exp[ev["mute"] + dly:] = 0
         bad = int(np.count_nonzero(exp[tbp:] != ol[lag + tbp:lag + len(exp)]))
         if best is None or bad < best[0]:
-            best = (bad, dly, exp, s_fr, out_f, sat_f, rabs_f)
+            best = (bad, dly, exp, s_fr, out_f, sat_f, rabs_f, out_e, wet_f)
         if bad == 0:
             break
-    bad, dly, exp, s_fr, out_f, sat_f, rabs_f = best
+    bad, dly, exp, s_fr, out_f, sat_f, rabs_f, out_e, wet_f = best
     print("echo: %d mismatching samples of %d (frame offset %d)" % (bad, len(exp) - tbp, dly))
     echo_ok = bad == 0
     for k in np.nonzero(exp[tbp:] != ol[lag + tbp:lag + len(exp)])[0][:5]:
         print("  echo MISMATCH n=%d got %d, expected %d" % (tbp + k, ol[lag + tbp + k], exp[tbp + k]))
     # the echo must actually have been audible and exercised its limiters
     en0, en1 = ev["cfg"], ev["off"]
-    diff = int(np.count_nonzero(out_f[en0:en1] != s_fr[en0:en1]))
+    diff = int(np.count_nonzero(out_e[en0:en1] != s_fr[en0:en1]))
     print("echo: %d of %d samples differ from the dry cab output, %d saturated in model, "
           "peak |r| = %d" % (diff, en1 - en0, int(sat_f[en0:en1].sum()), int(rabs_f.max())))
     echo_ok &= diff > (en1 - en0) // 2
+    # spring reverb: audible with the echo on, with the echo off, and in the tail after REV off
+    r0, r1, r2 = ev["cfg"], ev["revonly"], ev["off"]
+    seg = [("echo on", r0, r1), ("reverb only", r1, r2),
+           ("tail after REV off", r2, ev["mute"])]
+    for name, a_, b_ in seg:
+        nz = int(np.count_nonzero(wet_f[a_:b_]))
+        print("reverb %-18s: %d of %d samples with wet != 0, max |wet| = %d"
+              % (name, nz, b_ - a_, int(np.abs(wet_f[a_:b_]).max())))
+        echo_ok &= nz > (b_ - a_) // 2
+    ro = out_e[r1:r2] == s_fr[r1:r2]           # EN = 0 -> tape echo transparent
+    echo_ok &= bool(ro.all())
     prev = 0
     for i in range(4):
         sp, pk = rd["p%d" % i]

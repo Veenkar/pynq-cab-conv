@@ -10,8 +10,10 @@ This file is for working on the code.
 
 ## Status
 - RTL verified bit-exact in Icarus simulation (small and full 8192-tap config both PASS).
-- `vivado/build.tcl` builds cleanly in Vivado 2026.1: timing met (WNS +1.27 ns @ 122.88 MHz),
-  4 DSP, 26 BRAM tiles (12 of them the capture ring), ~2% LUT; no critical warnings.
+- `vivado/build.tcl` builds cleanly in Vivado 2026.1: timing met (WNS +0.30 ns, WHS +0.03 ns @ 122.88 MHz,
+  with echo + spring reverb), 6 DSP (4 FIR, 1 echo, 1 spring), 52.5 BRAM tiles (12 capture ring, 24 tape,
+  3 spring), 3462 LUT (6.5%); no critical warnings. Spring reverb: bit-exact in simulation and verified on hardware
+  (riff through the Focusrite: reverb-only tail decays ~20 dB/s, RT60 ~2.5 s, as the model predicts).
 - **Verified on hardware** (PYNQ Linux 3.0): overlay + codec init, bypass, IR load / bank switch,
   real-time convolution. Measured through a Focusrite (sweep-free, riff cross-spectrum): response
   matches the IR within ~0.5 dB 60 Hz–5 kHz, coherence 0.97–1.0, fs offset vs Focusrite ~5–10 ppm.
@@ -43,6 +45,9 @@ rtl/clk_fwd.v        ODDR clock forwarding (plain flop under `SIMULATION`)
 rtl/debounce.v       button sync + debounce (BTN0 -> REC, BTN1 -> bypass, BTN2 -> echo EN, BTN3 -> ECHO_CTRL[5] REV; LED0 blinks while REC, LED1 = !bypass, LED2 = echo on, LED3 = rev on)
 rtl/tape_echo.v      Space Echo (RE-201 style tape echo): sequential engine, 1 shared DSP multiplier, 2^15x24 BRAM tape,
                      ~50 cycles/sample, bit-exact with `cab_conv.echo_model` (spec docs/space_echo.md); runs after the FIR, before the DAC
+rtl/spring.v         spring reverb (2 dispersive springs, time-shared, 1 shared DSP multiplier, 3 BRAM tiles, 728 cycles/sample),
+                     runs in parallel with the FIR, bit-exact with `cab_conv.spring_model` (spec docs/spring.md);
+                     DAC word = sat24(echo_out + wet), REV = ECHO_CTRL[5], volume = ECHO_REVERB, STATUS[5] = spring overrun
 rtl/level_led.v      peak envelope -> PWM LED (RGB LD4 = input, RGB LD5 = DAC output level; colours show cab/bypass x echo EN (LD4) or REV (LD5)), 6 dB per brightness doubling
 sim/tb_cab_conv.v    AXI BFM + behavioural ADAU1761 I2S slave
 sim/run_sim.py       stimulus gen, runs iverilog/vvp, bit-exact check vs Python model
@@ -107,8 +112,8 @@ Sim needs `iverilog`, `numpy`, `scipy`. Compile flags used: `-g2005 -DSIMULATION
 Documented at the top of `rtl/cab_conv_top.v` and in README.md / README_PL.md. Coefs at `0x8000 + 4*i`, write-only.
 AXI window is 128 KiB. Recording: `CTRL[6]` REC (RW, BTN0 toggles, LED0 blinks while set), `0x28` REC_WPTR (RO, frames since
 REC rose), `0x10000 + 4*i` CAPTURE ring (RO, 8192 frames, word 2k = dry x, 2k+1 = wet y, sign-extended 24-bit).
-Space Echo: regs `0x40..0x6C` (ECHO_*, `ECHO_PEAK`/`ECHO_DRIVE` clear on read), `STATUS[4]` echo overrun; tx = echo output
-(EN = 0 is bit-identical to no echo); the capture ring still records the cab output y. The sim overrides the glide
+Space Echo: regs `0x40..0x6C` (ECHO_*, `ECHO_PEAK`/`ECHO_DRIVE` clear on read), `STATUS[4]` echo overrun, `STATUS[5]` spring overrun; tx = sat24(echo output + spring wet)
+(EN = 0 is bit-identical to no echo; REV = 0, REVERB = 0 and an empty tail is bit-identical to no reverb); the capture ring still records the cab output y. The sim overrides the glide
 shift (`ECHO_SLEW` param, 5 in the TB, 13 in hardware) so echoes settle within a short run.
 `record.py` attaches by raw MMIO (no CabConv, codec not reconfigured) and writes `~xilinx/cab_conv/rec/*.wav`.
 If you change the map, update RTL header, both README tables, `sw/cab_conv.py` constants and the testbench together.

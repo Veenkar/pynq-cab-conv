@@ -590,3 +590,89 @@ class CabConv(CaptureMixin):
         time.sleep(seconds)
         s1, t1 = self.mmio.read(REG_SAMPLES), time.time()
         return ((s1 - s0) & 0xFFFFFFFF) / (t1 - t0)
+
+
+# ----------------------------------------------------------------------
+# Spring reverb (spec: docs/spring.md)
+# ----------------------------------------------------------------------
+SPRING_LOG2 = 10                # loop delay line: 2^10 samples per spring
+SPRING_INK = 32768              # input gain into the springs, Q16
+SPRING_HPK = 683                # loop DC blocker, ~80 Hz
+# per spring: M sections, stretch K, allpass coefficient A (Q17), loop delay D (samples),
+# loop gain G (Q16), loop lowpass C (Q16), modulation depth MODD (Q5 samples), LFO inc
+SPRING_PARAMS = (
+    dict(M=72, K=4, A=-81265, D=600, G=61604, C=39322, MODD=96, INC=80530),    # a=-0.620
+    dict(M=64, K=4, A=-75367, D=700, G=61604, C=39322, MODD=96, INC=116319),   # a=-0.575
+)
+
+
+def _spring_one(sin, p):
+    """One spring (bit-exact, see docs/spring.md). sin: int array, spring input per sample.
+    Returns the chain output u[n]. Evaluated as a wavefront over (section, time): cell
+    (m, n) is computed at step t = n + m, so all M sections update in one numpy op."""
+    M, K, A, D = p["M"], p["K"], p["A"], p["D"]
+    G, C, MODD, INC = p["G"], p["C"], p["MODD"], p["INC"]
+    nbuf = 1 << SPRING_LOG2
+    mask = nbuf - 1
+    n_s = len(sin)
+    assert D - 4 > M + 1 and D + 4 < nbuf - 2
+    ring = np.zeros((K + 1, M + 1), dtype=np.int64)
+    dl = [0] * nbuf
+    out = np.zeros(n_s, dtype=np.int64)
+    sinl = [int(v) for v in sin]
+    x0 = 0
+    lp = hz = ph = 0
+    new = np.zeros(M + 1, dtype=np.int64)
+    for t in range(n_s + M):
+        if t < n_s:
+            u_ = ph >> 15
+            tri = (u_ if u_ < 65536 else 131071 - u_) - 32768
+            ph = (ph + INC) & 0xFFFFFFFF
+            d = (D << 16) + ((tri * MODD) >> 4)
+            di, fr = d >> 16, d & 0xFFFF
+            a, b = dl[(t - di) & mask], dl[(t - di - 1) & mask]
+            x0 = a + (((b - a) * fr) >> 16)
+        else:
+            x0 = 0
+        pk = ring[(t - K) % (K + 1)]
+        new[1:] = ring[(t - 1 - K) % (K + 1)][:-1] + \
+            ((A * (ring[(t - 1) % (K + 1)][:-1] - pk[1:]) + 65536) >> 17)
+        np.clip(new, YMIN, YMAX, out=new)
+        new[0] = x0
+        ring[t % (K + 1)] = new
+        n = t - M
+        if n >= 0:
+            u = int(new[M])
+            out[n] = u
+            lp += ((u - lp) * C) >> 16
+            hz += ((lp - hz) * SPRING_HPK) >> 16
+            f = lp - hz
+            f = YMAX if f > YMAX else YMIN if f < YMIN else f
+            v = sinl[n] + ((f * G) >> 16)
+            dl[n & mask] = YMAX if v > YMAX else YMIN if v < YMIN else v
+    return out
+
+
+def spring_model(s, rev_on, reverb_gain, echo_out=None):
+    """Bit-exact model of the spring reverb (spec: docs/spring.md).
+
+    s: echo-stage input (24-bit ints). rev_on / reverb_gain: scalar or per-sample arrays
+    (ECHO_CTRL[5], ECHO_REVERB). REV only gates the spring INPUT (the tail rings out);
+    the wet path always runs. The spring step n consumes s[n-1]; its output W[n] is added
+    in frame n+1. Returns (out, wet): wet[n] = (W[n-1] * reverb_gain[n]) >> 16 and
+    out = sat24(echo_out + wet) when echo_out is given (else out = sat24(wet)).
+    """
+    s = np.asarray(s, dtype=np.int64)
+    n = len(s)
+    on = np.broadcast_to(np.asarray(rev_on, dtype=bool), (n,))
+    rg = np.broadcast_to(np.asarray(reverb_gain, dtype=np.int64), (n,)) & 0x1FFFF
+    sp = np.zeros(n, dtype=np.int64)
+    sp[1:] = s[:-1]
+    sp = np.where(on, sp, 0)
+    sin = (sp * SPRING_INK) >> 16
+    w = sum(_spring_one(sin, p) for p in SPRING_PARAMS) >> 1
+    wd = np.zeros(n, dtype=np.int64)
+    wd[1:] = w[:-1]
+    wet = (wd * rg) >> 16
+    base = np.zeros(n, dtype=np.int64) if echo_out is None else np.asarray(echo_out, dtype=np.int64)
+    return np.clip(base + wet, YMIN, YMAX), wet

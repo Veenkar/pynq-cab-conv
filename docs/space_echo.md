@@ -3,8 +3,8 @@
 A tape-echo effect after the cab FIR, modelled on the Roland RE-201: one tape loop
 (circular buffer) with a record head and three playback heads, a feedback loop with tape
 darkening and tape saturation, wow and flutter, bass/treble on the echo, and the 12-position
-MODE SELECTOR. The spring reverb (modes 5..12, REVERB VOLUME) is not implemented yet; its
-bits/register are stored only.
+MODE SELECTOR. The spring reverb (modes 5..12, REVERB VOLUME) is live now: `ECHO_CTRL[5]` REV
+and `ECHO_REVERB` drive `rtl/spring.v`, see [spring.md](spring.md).
 
 ```
                   ┌──────────────────────── feedback (INTENSITY) ◄── HPF ◄── tape LPF (DAMP) ◄──┐
@@ -20,7 +20,7 @@ in bypass. Mute still forces 0 at the DAC. Output: `tx_l = out`, `tx_r = left_on
 
 | Off  | Name         | Access | Bits |
 |------|--------------|--------|------|
-| 0x40 | ECHO_CTRL    | RW | [0] EN (POWER; also toggled by BTN2, LD2 shows it), [3:1] head mask (bit1 = head 1 .. bit3 = head 3), [4] CANCEL (no new input onto the tape, repeats trail off), [5] REV (spring, reserved; also toggled by BTN3, LD3 shows it) |
+| 0x40 | ECHO_CTRL    | RW | [0] EN (POWER; also toggled by BTN2, LD2 shows it), [3:1] head mask (bit1 = head 1 .. bit3 = head 3), [4] CANCEL (no new input onto the tape, repeats trail off), [5] REV (spring reverb input on; also toggled by BTN3, LD3 shows it) |
 | 0x44 | ECHO_DELAY   | RW | [31:0] head-1 delay target, unsigned Q16.16 samples |
 | 0x48 | ECHO_FB      | RW | [16:0] feedback gain, unsigned Q16 (0 .. 2.0) |
 | 0x4C | ECHO_LEVEL   | RW | [16:0] echo volume, unsigned Q16 |
@@ -29,7 +29,7 @@ in bypass. Mute still forces 0 at the DAC. Output: `tx_l = out`, `tx_r = left_on
 | 0x58 | ECHO_TREBLE  | RW | [17:0] signed Q16, 0 = flat |
 | 0x5C | ECHO_WOW     | RW | [15:0] wow depth, [31:16] flutter depth, unsigned Q8 samples |
 | 0x60 | ECHO_DAMP    | RW | [15:0] tape lowpass coefficient, Q16 |
-| 0x64 | ECHO_REVERB  | RW | [16:0] reverb volume (reserved, stored only) |
+| 0x64 | ECHO_REVERB  | RW | [16:0] spring reverb volume, Q16 (live, see spring.md) |
 | 0x68 | ECHO_PEAK    | RO, read clears | [23:0] max \|tx_l\| (final DAC word, 0 when muted) since last read, [24] output mix saturated |
 | 0x6C | ECHO_DRIVE   | RO, read clears | [24:0] max \|r\| (record signal before the soft clip) since last read |
 | 0x0C | STATUS[4]    | RO sticky | echo overrun (engine not done before the next frame; should never be 1); cleared by CLEAR |
