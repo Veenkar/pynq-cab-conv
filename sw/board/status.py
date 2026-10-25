@@ -16,7 +16,8 @@ from cab_conv import (MMIO_RANGE, REG_ID, ID_VALUE, REG_CTRL, REG_STATUS, REG_CL
 
 FS = 48000
 FULL = 8388607.0
-DB_MIN = -60.0                  # bar scale: DB_MIN .. 0 dBFS
+DB_MIN = -48.0                  # bar scale: DB_MIN .. 0 dBFS (ticks at TICKS_DB)
+TICKS_DB = (-24.0, -12.0, -6.0)
 FALL_DB_S = 40.0                # bar fall speed
 CLIP_HOLD_S = 2.0
 IR_FILE = "/home/xilinx/cab_conv/current_ir.txt"
@@ -57,12 +58,13 @@ def render(s):
     if echo:
         c.rect(W - 24, 0, 24, 7)
         c.text(W - 23, 0, "ECHO", on=False)
-    # two 11 px meters (input above output, 2 px apart), 2 px border, -60..0 dBFS, tick at -12 dB;
-    # a clipping channel's meter is shown inverted
+    # two 11 px meters (input above output, 2 px apart), 2 px border, DB_MIN..0 dBFS, ticks at TICKS_DB;
+    # a clip (held CLIP_HOLD_S) shows as an inverted 8 px cap at the right end of that meter
+    ticks = tuple((t - DB_MIN) / -DB_MIN for t in TICKS_DB)
     for y, d, clip in ((8, s["in_db"], s["in_clip"]), (21, s["out_db"], s["out_clip"])):
-        c.hbar(0, y, W, 11, (d - DB_MIN) / -DB_MIN, ticks=((-12 - DB_MIN) / -DB_MIN,), border=2)
+        c.hbar(0, y, W, 11, (d - DB_MIN) / -DB_MIN, ticks=ticks, border=2)
         if clip:
-            c.invert(0, y, W, 11)
+            c.invert(W - 11, y + 3, 8, 5)
     return c
 
 
